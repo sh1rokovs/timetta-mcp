@@ -1,0 +1,79 @@
+import httpx
+import pytest
+import respx
+
+from timetta_mcp.client import TimettaClient, TimettaError
+
+BASE = "https://api.timetta.com/odata"
+
+
+@respx.mock
+async def test_query_success_sets_header_and_params():
+    route = respx.get(f"{BASE}/Users").mock(
+        return_value=httpx.Response(200, json={"value": [{"id": "1"}]})
+    )
+    client = TimettaClient(token="tok")
+    rows = await client.query("Users", select="id,name", filter="x eq 1", top=10)
+
+    assert rows == [{"id": "1"}]
+    req = route.calls.last.request
+    assert req.headers["Authorization"] == "Bearer tok"
+    assert req.url.params["$select"] == "id,name"
+    assert req.url.params["$filter"] == "x eq 1"
+    assert req.url.params["$top"] == "10"
+    await client.aclose()
+
+
+@respx.mock
+async def test_query_caps_top_at_200():
+    route = respx.get(f"{BASE}/Users").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+    client = TimettaClient(token="t")
+    await client.query("Users", top=9999)
+    assert route.calls.last.request.url.params["$top"] == "200"
+    await client.aclose()
+
+
+@respx.mock
+async def test_query_401_mentions_token():
+    respx.get(f"{BASE}/Users").mock(return_value=httpx.Response(401))
+    client = TimettaClient(token="t")
+    with pytest.raises(TimettaError, match="TIMETTA_API_TOKEN"):
+        await client.query("Users")
+    await client.aclose()
+
+
+@respx.mock
+async def test_query_404_mentions_entity():
+    respx.get(f"{BASE}/Ghosts").mock(return_value=httpx.Response(404))
+    client = TimettaClient(token="t")
+    with pytest.raises(TimettaError, match="Ghosts"):
+        await client.query("Ghosts")
+    await client.aclose()
+
+
+@respx.mock
+async def test_query_500_surfaces_business_message():
+    respx.get(f"{BASE}/Users").mock(
+        return_value=httpx.Response(500, json={"code": "X", "message": "bad period"})
+    )
+    client = TimettaClient(token="t")
+    with pytest.raises(TimettaError, match="bad period"):
+        await client.query("Users")
+    await client.aclose()
+
+
+@respx.mock
+async def test_fetch_metadata_xml_returns_text():
+    respx.get(f"{BASE}/$metadata").mock(
+        return_value=httpx.Response(200, text="<edmx/>")
+    )
+    client = TimettaClient(token="t")
+    assert await client.fetch_metadata_xml() == "<edmx/>"
+    await client.aclose()
+
+
+def test_token_not_in_repr():
+    client = TimettaClient(token="super-secret")
+    assert "super-secret" not in repr(client)
