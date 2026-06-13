@@ -43,7 +43,7 @@ class TimettaClient:
             params["$expand"] = expand
         if orderby:
             params["$orderby"] = orderby
-        params["$top"] = min(int(top), MAX_TOP)
+        params["$top"] = max(0, min(int(top), MAX_TOP))
         if skip is not None:
             params["$skip"] = int(skip)
 

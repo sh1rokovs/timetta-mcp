@@ -36,6 +36,17 @@ async def test_query_caps_top_at_200():
 
 
 @respx.mock
+async def test_query_floors_negative_top_at_zero():
+    route = respx.get(f"{BASE}/Users").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+    client = TimettaClient(token="t")
+    await client.query("Users", top=-5)
+    assert route.calls.last.request.url.params["$top"] == "0"
+    await client.aclose()
+
+
+@respx.mock
 async def test_query_401_mentions_token():
     respx.get(f"{BASE}/Users").mock(return_value=httpx.Response(401))
     client = TimettaClient(token="t")
