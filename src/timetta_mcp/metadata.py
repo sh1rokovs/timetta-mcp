@@ -4,22 +4,14 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
-# OData namespace URIs used in EDMX documents.
-_EDM = "http://docs.oasis-open.org/odata/ns/edm"
-_EDMX = "http://docs.oasis-open.org/odata/ns/edmx"
-
-_Q = {
-    "EntitySet": f"{{{_EDM}}}EntitySet",
-    "EntityType": f"{{{_EDM}}}EntityType",
-    "Property": f"{{{_EDM}}}Property",
-    "NavigationProperty": f"{{{_EDM}}}NavigationProperty",
-}
+# ElementTree's findall supports the "{*}Tag" namespace wildcard, matching the
+# local tag name in any XML namespace, so we don't hard-code OData EDMX namespaces.
 
 
 def parse_entities(metadata_xml: str) -> list[str]:
     """Return the names of all queryable EntitySets (e.g. 'Users')."""
     root = ET.fromstring(metadata_xml)
-    return [es.get("Name") for es in root.iter(_Q["EntitySet"]) if es.get("Name")]
+    return [name for es in root.findall(".//{*}EntitySet") if (name := es.get("Name"))]
 
 
 def parse_entity_schema(metadata_xml: str, entity: str) -> dict:
@@ -30,7 +22,7 @@ def parse_entity_schema(metadata_xml: str, entity: str) -> dict:
     root = ET.fromstring(metadata_xml)
 
     type_ref = None
-    for es in root.iter(_Q["EntitySet"]):
+    for es in root.findall(".//{*}EntitySet"):
         if es.get("Name") == entity:
             type_ref = es.get("EntityType")
             break
@@ -38,7 +30,7 @@ def parse_entity_schema(metadata_xml: str, entity: str) -> dict:
         raise ValueError(f"Unknown entity: {entity}")
 
     type_name = type_ref.split(".")[-1]
-    for et in root.iter(_Q["EntityType"]):
+    for et in root.findall(".//{*}EntityType"):
         if et.get("Name") == type_name:
             properties = [
                 {
@@ -46,11 +38,11 @@ def parse_entity_schema(metadata_xml: str, entity: str) -> dict:
                     "type": p.get("Type"),
                     "nullable": p.get("Nullable", "true") != "false",
                 }
-                for p in et.iter(_Q["Property"])
+                for p in et.findall("{*}Property")
             ]
             navigation = [
                 {"name": n.get("Name"), "type": n.get("Type")}
-                for n in et.iter(_Q["NavigationProperty"])
+                for n in et.findall("{*}NavigationProperty")
             ]
             return {
                 "entity": entity,
