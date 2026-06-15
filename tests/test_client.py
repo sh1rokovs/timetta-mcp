@@ -88,3 +88,19 @@ async def test_fetch_metadata_xml_returns_text():
 def test_token_not_in_repr():
     client = TimettaClient(token="super-secret")
     assert "super-secret" not in repr(client)
+
+
+@respx.mock
+async def test_create_posts_body_and_returns_entity():
+    route = respx.post(f"{BASE}/Issues").mock(
+        return_value=httpx.Response(201, json={"id": "new", "name": "T"})
+    )
+    client = TimettaClient(token="tok")
+    created = await client.create("Issues", {"name": "T"})
+
+    assert created == {"id": "new", "name": "T"}
+    req = route.calls.last.request
+    assert req.headers["Authorization"] == "Bearer tok"
+    assert req.headers["Prefer"] == "return=representation"
+    assert req.read() == b'{"name":"T"}'
+    await client.aclose()

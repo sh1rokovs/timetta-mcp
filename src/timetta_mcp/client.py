@@ -50,6 +50,16 @@ class TimettaClient:
         resp = await self._send("GET", f"{self._base}/{entity}", params=params, what=entity)
         return resp.json().get("value", [])
 
+    async def create(self, entity: str, data: dict) -> dict:
+        resp = await self._send(
+            "POST",
+            f"{self._base}/{entity}",
+            json=data,
+            headers={"Prefer": "return=representation"},
+            what=entity,
+        )
+        return resp.json()
+
     async def fetch_metadata_xml(self) -> str:
         resp = await self._send("GET", f"{self._base}/$metadata", what="$metadata")
         return resp.text
