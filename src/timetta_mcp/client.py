@@ -72,6 +72,13 @@ class TimettaClient:
             return {"id": id, "updated": True}
         return resp.json()
 
+    async def delete(self, entity: str, id: str) -> None:
+        await self._send(
+            "DELETE",
+            f"{self._base}/{entity}({id})",
+            what=entity,
+        )
+
     async def fetch_metadata_xml(self) -> str:
         resp = await self._send("GET", f"{self._base}/$metadata", what="$metadata")
         return resp.text

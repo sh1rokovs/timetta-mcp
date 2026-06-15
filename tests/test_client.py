@@ -128,3 +128,16 @@ async def test_update_204_returns_confirmation():
     updated = await client.update("Issues", "abc", {"name": "T2"})
     assert updated == {"id": "abc", "updated": True}
     await client.aclose()
+
+
+@respx.mock
+async def test_delete_calls_delete_by_id():
+    route = respx.delete(f"{BASE}/Issues(abc)").mock(
+        return_value=httpx.Response(204)
+    )
+    client = TimettaClient(token="tok")
+    result = await client.delete("Issues", "abc")
+
+    assert result is None
+    assert route.calls.last.request.method == "DELETE"
+    await client.aclose()
