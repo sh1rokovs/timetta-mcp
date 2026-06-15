@@ -47,7 +47,8 @@ Two modes, chosen automatically:
    This opens your browser to Timetta, you authorize, and the refresh token is
    saved to `TIMETTA_CREDENTIALS_PATH`. The server then refreshes the access
    token automatically (no further interaction). Re-run `timetta-mcp login` if
-   the refresh token expires (~15 days of inactivity).
+   the refresh token expires (Timetta refresh tokens last roughly 15 days of
+   inactivity — see Timetta's API docs for the exact lifetime).
 
 ## Run
 
