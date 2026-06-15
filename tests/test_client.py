@@ -141,3 +141,14 @@ async def test_delete_calls_delete_by_id():
     assert result is None
     assert route.calls.last.request.method == "DELETE"
     await client.aclose()
+
+
+@respx.mock
+async def test_400_surfaces_validation_message():
+    respx.post(f"{BASE}/Issues").mock(
+        return_value=httpx.Response(400, json={"code": "X", "message": "name required"})
+    )
+    client = TimettaClient(token="t")
+    with pytest.raises(TimettaError, match="name required"):
+        await client.create("Issues", {})
+    await client.aclose()

@@ -113,7 +113,7 @@ class TimettaClient:
             )
         if code in (403, 404):
             raise TimettaError(f"No access or not found: {what}")
-        if code == 500:
+        if code in (400, 500):
             try:
                 message = resp.json().get("message") or resp.text
             except Exception:
