@@ -3,16 +3,28 @@
 **Дата:** 2026-06-15
 **Статус:** реализован
 
-> **Ревизия (2026-06-15): браузерный `authorization_code` заменён на ROPG
-> (`grant_type=password`).** При проверке выяснилось, что публичный клиент
-> `external` в IdentityServer Timetta authorization_code с loopback redirect_uri
-> **не принимает** — `/connect/authorize` сразу редиректит на `/error`. Тот же
-> `external` поддерживает `grant_type=password` (+ `refresh_token`), что
-> подтверждено рабочим VS Code-расширением Timetta. Поэтому `timetta-mcp login`
-> теперь спрашивает email/пароль в терминале и обменивает их на токены через
-> password grant. Ниже отражены решения 4–5, компонент `login`, env, тесты и
-> «вне объёма» по факту реализации; разделы про PKCE/loopback оставлены
-> зачёркнутыми как история решения.
+> **Ревизия 1 (2026-06-15): браузерный `authorization_code` (loopback) отклонён
+> в пользу ROPG.** Публичный клиент `external` authorization_code с loopback
+> redirect_uri **не принимает** — `/connect/authorize` сразу редиректит на
+> `/error`; он поддерживает только `grant_type=password` (+ `refresh_token`),
+> что подтверждено рабочим VS Code-расширением Timetta.
+>
+> **Ревизия 2 (2026-06-15): `login` стал мультиметодным.** По факту реализации
+> `timetta-mcp login` предлагает выбор из трёх методов:
+> 1. **Token API** — вставка долгоживущего статического токена (TTL ~1 год),
+>    сохраняется в файл; сервер шлёт его как Bearer. Рекомендуется, работает с SSO.
+> 2. **Email + password** — ROPG (`grant_type=password`, клиент `external`),
+>    с `refresh_token` (~15 дней).
+> 3. **Браузер** — authorization_code + PKCE через клиент `web_app` (тот же, что
+>    у сайта). redirect_uri жёстко `https://app.timetta.com/auth-callback` (без
+>    loopback), поэтому код вставляется вручную; `web_app` не отдаёт
+>    `offline_access` → **без refresh**, access_token ~1 час. Подтверждено
+>    пробами: `web_app` — публичный клиент (обмен кода → `invalid_grant`, не
+>    `invalid_client`).
+>
+> Файл кредов теперь хранит либо `{"type":"static", api_token}`, либо OAuth-токены
+> (`StoredTokens`); `get_client()` выбирает режим по содержимому. Разделы ниже про
+> исходный одиночный браузерный/ROPG-флоу оставлены как история.
 
 ## Проблема
 
