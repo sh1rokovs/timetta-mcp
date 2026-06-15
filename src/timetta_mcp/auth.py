@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
+
+from .client import TimettaError
 
 DEFAULT_AUTH_URL = "https://auth.timetta.com"
 DEFAULT_CLIENT_ID = "external"
@@ -96,3 +102,79 @@ class TokenStore:
             os.chmod(self._path, 0o600)
         except OSError:
             pass  # best-effort on Windows
+
+
+def tokens_from_response(
+    payload: dict, token_endpoint: str, *, previous_refresh: str | None = None
+) -> StoredTokens:
+    return StoredTokens(
+        access_token=payload["access_token"],
+        refresh_token=payload.get("refresh_token") or previous_refresh or "",
+        expires_at=time.time() + int(payload.get("expires_in", 3600)),
+        token_endpoint=token_endpoint,
+    )
+
+
+class TokenProvider:
+    """Process-level provider: serves a valid access_token, refreshing as needed."""
+
+    def __init__(self, store: TokenStore, client_id: str, *, leeway: float = 60.0) -> None:
+        self._store = store
+        self._client_id = client_id
+        self._leeway = leeway
+        self._lock = asyncio.Lock()
+        self._tokens: StoredTokens | None = None
+
+    def __repr__(self) -> str:
+        return f"TokenProvider(client_id={self._client_id!r})"
+
+    def can_refresh(self) -> bool:
+        return True
+
+    def _ensure_loaded(self) -> StoredTokens:
+        if self._tokens is None:
+            self._tokens = self._store.load()
+        if self._tokens is None:
+            raise TimettaError(
+                "No valid Timetta credentials — run `timetta-mcp login`"
+            )
+        return self._tokens
+
+    def _is_valid(self, tokens: StoredTokens) -> bool:
+        return tokens.expires_at - self._leeway > time.time()
+
+    async def get_token(self) -> str:
+        async with self._lock:
+            tokens = self._ensure_loaded()
+            if not self._is_valid(tokens):
+                await self._refresh_locked()
+            return self._tokens.access_token
+
+    async def force_refresh(self) -> str:
+        async with self._lock:
+            self._ensure_loaded()
+            await self._refresh_locked()
+            return self._tokens.access_token
+
+    async def _refresh_locked(self) -> None:
+        current = self._tokens
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": self._client_id,
+            "refresh_token": current.refresh_token,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as c:
+                resp = await c.post(current.token_endpoint, data=data)
+        except httpx.RequestError as exc:
+            raise TimettaError(
+                f"Network error refreshing Timetta token: {exc}"
+            ) from exc
+        if resp.status_code != 200:
+            raise TimettaError(
+                "Failed to refresh Timetta token — run `timetta-mcp login`"
+            )
+        self._tokens = tokens_from_response(
+            resp.json(), current.token_endpoint, previous_refresh=current.refresh_token
+        )
+        self._store.save(self._tokens)
