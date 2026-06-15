@@ -152,3 +152,53 @@ async def test_400_surfaces_validation_message():
     with pytest.raises(TimettaError, match="name required"):
         await client.create("Issues", {})
     await client.aclose()
+
+
+class _RefreshOnceProvider:
+    """Test double: first token is stale (server 401s), refresh yields a good one."""
+
+    def __init__(self):
+        self.tokens = ["stale", "fresh"]
+        self.refreshed = False
+
+    async def get_token(self):
+        return self.tokens[0]
+
+    def can_refresh(self):
+        return True
+
+    async def force_refresh(self):
+        assert self.tokens, "force_refresh called more times than expected"
+        self.refreshed = True
+        self.tokens.pop(0)
+        return self.tokens[0]
+
+
+@respx.mock
+async def test_query_retries_once_after_401_refresh():
+    route = respx.get(f"{BASE}/Users").mock(
+        side_effect=[
+            httpx.Response(401),
+            httpx.Response(200, json={"value": [{"id": "1"}]}),
+        ]
+    )
+    provider = _RefreshOnceProvider()
+    client = TimettaClient(token_provider=provider)
+    rows = await client.query("Users")
+
+    assert rows == [{"id": "1"}]
+    assert provider.refreshed is True
+    assert route.calls.last.request.headers["Authorization"] == "Bearer fresh"
+    await client.aclose()
+
+
+@respx.mock
+async def test_query_second_401_raises():
+    respx.get(f"{BASE}/Users").mock(return_value=httpx.Response(401))
+    provider = _RefreshOnceProvider()
+    client = TimettaClient(token_provider=provider)
+    with pytest.raises(TimettaError):
+        await client.query("Users")
+    assert provider.refreshed is True       # refreshed exactly once
+    assert len(provider.tokens) == 1        # popped exactly once
+    await client.aclose()
