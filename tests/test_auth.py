@@ -371,3 +371,34 @@ def test_pkce_s256_matches_rfc7636_vector():
         .decode()
     )
     assert challenge == expected_challenge
+
+
+import timetta_mcp.auth as auth_mod
+
+
+@respx.mock
+async def test_login_drives_loopback_and_saves(tmp_path, monkeypatch):
+    respx.post(TOKEN_EP).mock(
+        return_value=httpx.Response(
+            200, json={"access_token": "a", "refresh_token": "r", "expires_in": 3600}
+        )
+    )
+    store = TokenStore(tmp_path / "creds.json")
+
+    captured = {}
+
+    def fake_capture(authorize_url, redirect_uri, expected_state):
+        captured["url"] = authorize_url
+        return {"code": "the-code", "state": expected_state}
+
+    monkeypatch.setattr(auth_mod, "_capture_redirect", fake_capture)
+
+    tokens = await auth_mod.login(
+        auth_url="https://auth.timetta.com",
+        client_id="client",
+        store=store,
+        redirect_port=5555,
+    )
+    assert tokens.access_token == "a"
+    assert store.load().refresh_token == "r"
+    assert captured["url"].startswith("https://auth.timetta.com/connect/authorize?")

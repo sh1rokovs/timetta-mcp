@@ -498,7 +498,15 @@ async def attach_file(
 
 
 def main() -> None:
-    """Console entry point — runs the server over stdio."""
+    """Console entry point — `timetta-mcp` serves over stdio; `login` runs OAuth."""
+    import sys
+
+    argv = sys.argv[1:]
+    if argv and argv[0] == "login":
+        from .auth import login_command
+
+        login_command()
+        return
     mcp.run()
 
 
