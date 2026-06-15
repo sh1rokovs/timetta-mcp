@@ -107,8 +107,15 @@ class TokenStore:
 def tokens_from_response(
     payload: dict, token_endpoint: str, *, previous_refresh: str | None = None
 ) -> StoredTokens:
+    try:
+        access_token = payload["access_token"]
+    except KeyError as exc:
+        raise TimettaError(
+            "Token endpoint returned 200 but no 'access_token' — run `timetta-mcp login`"
+        ) from exc
     return StoredTokens(
-        access_token=payload["access_token"],
+        access_token=access_token,
+        # empty string means no refresh token; the next refresh will fail with invalid_grant
         refresh_token=payload.get("refresh_token") or previous_refresh or "",
         expires_at=time.time() + int(payload.get("expires_in", 3600)),
         token_endpoint=token_endpoint,
@@ -147,17 +154,18 @@ class TokenProvider:
         async with self._lock:
             tokens = self._ensure_loaded()
             if not self._is_valid(tokens):
-                await self._refresh_locked()
-            return self._tokens.access_token
+                tokens = await self._refresh_locked()
+            return tokens.access_token
 
     async def force_refresh(self) -> str:
         async with self._lock:
             self._ensure_loaded()
-            await self._refresh_locked()
-            return self._tokens.access_token
+            tokens = await self._refresh_locked()
+            return tokens.access_token
 
-    async def _refresh_locked(self) -> None:
+    async def _refresh_locked(self) -> StoredTokens:
         current = self._tokens
+        assert current is not None  # guaranteed by _ensure_loaded under the lock
         data = {
             "grant_type": "refresh_token",
             "client_id": self._client_id,
@@ -178,3 +186,4 @@ class TokenProvider:
             resp.json(), current.token_endpoint, previous_refresh=current.refresh_token
         )
         self._store.save(self._tokens)
+        return self._tokens

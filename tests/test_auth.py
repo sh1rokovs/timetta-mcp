@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 
@@ -187,3 +188,33 @@ async def test_force_refresh_ignores_validity(tmp_path):
     p = TokenProvider(store, "client")
     assert await p.get_token() == "old-access"  # valid, no refresh
     assert await p.force_refresh() == "forced"  # forced regardless
+
+
+@respx.mock
+async def test_provider_network_error_raises(tmp_path):
+    store = _store_with(tmp_path, expires_at=time.time() - 10)
+    respx.post(TOKEN_EP).mock(side_effect=httpx.ConnectError("boom"))
+    p = TokenProvider(store, "client")
+    with pytest.raises(TimettaError, match="Network error"):
+        await p.get_token()
+
+
+@respx.mock
+async def test_provider_200_without_access_token_raises(tmp_path):
+    store = _store_with(tmp_path, expires_at=time.time() - 10)
+    respx.post(TOKEN_EP).mock(return_value=httpx.Response(200, json={"expires_in": 3600}))
+    p = TokenProvider(store, "client")
+    with pytest.raises(TimettaError, match="timetta-mcp login"):
+        await p.get_token()
+
+
+@respx.mock
+async def test_provider_concurrent_calls_single_refresh(tmp_path):
+    store = _store_with(tmp_path, expires_at=time.time() - 10)
+    route = respx.post(TOKEN_EP).mock(
+        return_value=httpx.Response(200, json={"access_token": "new", "expires_in": 3600})
+    )
+    p = TokenProvider(store, "client")
+    t1, t2 = await asyncio.gather(p.get_token(), p.get_token())
+    assert t1 == t2 == "new"
+    assert route.call_count == 1
