@@ -12,13 +12,32 @@ class TimettaError(Exception):
     """Timetta API error with a message safe to show the model (no token)."""
 
 
+class _StaticToken:
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    async def get_token(self) -> str:
+        return self._token
+
+    def can_refresh(self) -> bool:
+        return False
+
+
 class TimettaClient:
-    def __init__(self, token: str, base_url: str = DEFAULT_BASE_URL) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        token_provider=None,
+        base_url: str = DEFAULT_BASE_URL,
+    ) -> None:
+        if token_provider is None:
+            if token is None:
+                raise TimettaError("TimettaClient needs a token or token_provider")
+            token_provider = _StaticToken(token)
+        self._provider = token_provider
         self._base = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30.0,
-        )
+        self._client = httpx.AsyncClient(timeout=30.0)
 
     def __repr__(self) -> str:  # never leak the token
         return f"TimettaClient(base_url={self._base!r})"
@@ -93,14 +112,32 @@ class TimettaClient:
         headers: dict[str, str] | None = None,
         what: str,
     ) -> httpx.Response:
-        try:
-            resp = await self._client.request(
+        resp = await self._request(method, url, params=params, json=json, headers=headers)
+        if resp.status_code == 401 and self._provider.can_refresh():
+            await self._provider.force_refresh()
+            resp = await self._request(
                 method, url, params=params, json=json, headers=headers
+            )
+        self._raise_for_status(resp, what)
+        return resp
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        json: dict | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        token = await self._provider.get_token()
+        merged = {"Authorization": f"Bearer {token}", **(headers or {})}
+        try:
+            return await self._client.request(
+                method, url, params=params, json=json, headers=merged
             )
         except httpx.RequestError as exc:
             raise TimettaError(f"Network error talking to Timetta: {exc}") from exc
-        self._raise_for_status(resp, what)
-        return resp
 
     @staticmethod
     def _raise_for_status(resp: httpx.Response, what: str) -> None:
