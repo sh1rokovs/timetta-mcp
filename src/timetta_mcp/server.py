@@ -83,6 +83,46 @@ async def _query_odata(
         await client.aclose()
 
 
+async def _create_entity(entity: str, data: dict) -> str:
+    try:
+        client = get_client()
+    except TimettaError as exc:
+        return f"Error: {exc}"
+    try:
+        return _dumps(await client.create(entity, data))
+    except Exception as exc:
+        return f"Error: {exc}"
+    finally:
+        await client.aclose()
+
+
+async def _update_entity(entity: str, id: str, data: dict) -> str:
+    try:
+        client = get_client()
+    except TimettaError as exc:
+        return f"Error: {exc}"
+    try:
+        return _dumps(await client.update(entity, id, data))
+    except Exception as exc:
+        return f"Error: {exc}"
+    finally:
+        await client.aclose()
+
+
+async def _delete_entity(entity: str, id: str) -> str:
+    try:
+        client = get_client()
+    except TimettaError as exc:
+        return f"Error: {exc}"
+    try:
+        await client.delete(entity, id)
+        return _dumps({"deleted": id})
+    except Exception as exc:
+        return f"Error: {exc}"
+    finally:
+        await client.aclose()
+
+
 @mcp.tool()
 async def list_entities() -> str:
     """List the queryable Timetta OData entities (EntitySet names)."""
@@ -123,6 +163,34 @@ async def query_odata(
         top=top,
         skip=skip,
     )
+
+
+@mcp.tool()
+async def create_entity(entity: str, data: dict) -> str:
+    """Create a new record in a Timetta OData entity.
+
+    `data` is a JSON object of field name -> value. Call get_entity_schema(entity)
+    first to learn the real field names. Returns the created record as JSON, or
+    'Error: ...' on failure."""
+    return await _create_entity(entity, data)
+
+
+@mcp.tool()
+async def update_entity(entity: str, id: str, data: dict) -> str:
+    """Update an existing record by id in a Timetta OData entity (PATCH).
+
+    `data` contains only the fields to change. Call get_entity_schema(entity)
+    first to learn the real field names. Returns the updated record as JSON, or
+    'Error: ...' on failure."""
+    return await _update_entity(entity, id, data)
+
+
+@mcp.tool()
+async def delete_entity(entity: str, id: str) -> str:
+    """Delete a record by id from a Timetta OData entity.
+
+    Returns {"deleted": "<id>"} as JSON on success, or 'Error: ...' on failure."""
+    return await _delete_entity(entity, id)
 
 
 def main() -> None:
