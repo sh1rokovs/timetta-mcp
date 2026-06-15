@@ -2,7 +2,7 @@
 
 MCP server exposing the [Timetta](https://timetta.com) main OData API to MCP
 clients (Claude Desktop, Claude Code, Codex, Gemini CLI, etc.) as a universal
-query gateway.
+read-write gateway.
 
 ## Tools
 
@@ -12,6 +12,11 @@ query gateway.
 - `query_odata(entity, filter?, select?, expand?, orderby?, top?, skip?)` —
   query an entity using OData semantics (without the leading `$`). `top`
   defaults to 50, capped at 200.
+- `create_entity(entity, data)` — create a record (POST). `data` is a JSON
+  object of field -> value.
+- `update_entity(entity, id, data)` — update a record by id (PATCH). `data`
+  holds only the fields to change.
+- `delete_entity(entity, id)` — delete a record by id (DELETE).
 
 ## Configuration
 
@@ -19,6 +24,10 @@ query gateway.
 |---|---|---|---|
 | `TIMETTA_API_TOKEN` | yes | — | Static Token API value (Bearer), TTL 1 year |
 | `TIMETTA_BASE_URL` | no | `https://api.timetta.com/odata` | OData base URL |
+
+The server can create, update and delete records. Effective permissions are
+governed entirely by the token — use a read-only Timetta token if write access
+is not needed.
 
 ## Run
 
