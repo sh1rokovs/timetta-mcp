@@ -56,8 +56,22 @@ class StoredTokens:
         return f"StoredTokens(expires_at={self.expires_at!r})"
 
 
+@dataclass
+class StaticCredentials:
+    """A long-lived Timetta Token API value (no refresh)."""
+
+    api_token: str
+
+    def __repr__(self) -> str:  # never leak the token value
+        return "StaticCredentials(...)"
+
+
 class TokenStore:
-    """Reads/writes the token file atomically; never leaks token values."""
+    """Reads/writes the credentials file atomically; never leaks token values.
+
+    The file holds either OAuth tokens (`StoredTokens`) or a static Token API
+    value (`{"type": "static", "api_token": ...}`).
+    """
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
@@ -65,38 +79,21 @@ class TokenStore:
     def __repr__(self) -> str:
         return f"TokenStore(path={str(self._path)!r})"
 
-    def load(self) -> StoredTokens | None:
-        """Return stored tokens, or None if the file does not exist.
-
-        Raises ValueError if the file exists but is malformed.
-        """
+    def _read(self) -> dict | None:
         if not self._path.exists():
             return None
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            return StoredTokens(
-                access_token=data["access_token"],
-                refresh_token=data["refresh_token"],
-                expires_at=float(data["expires_at"]),
-                token_endpoint=data["token_endpoint"],
-            )
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            return json.loads(self._path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
             raise ValueError(f"Malformed credentials file {self._path}: {exc}") from exc
 
-    def save(self, tokens: StoredTokens) -> None:
+    def _write(self, payload: dict) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            {
-                "access_token": tokens.access_token,
-                "refresh_token": tokens.refresh_token,
-                "expires_at": tokens.expires_at,
-                "token_endpoint": tokens.token_endpoint,
-            }
-        )
+        text = json.dumps(payload)
         fd, tmp_name = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
+                f.write(text)
             os.replace(tmp_name, self._path)
         except BaseException:
             try:
@@ -108,6 +105,55 @@ class TokenStore:
             os.chmod(self._path, 0o600)
         except OSError:
             pass  # best-effort on Windows
+
+    def load(self) -> StoredTokens | None:
+        """Return stored OAuth tokens, or None if the file does not exist.
+
+        Raises ValueError if the file exists but is not valid OAuth-token JSON.
+        """
+        data = self._read()
+        if data is None:
+            return None
+        try:
+            return StoredTokens(
+                access_token=data["access_token"],
+                refresh_token=data["refresh_token"],
+                expires_at=float(data["expires_at"]),
+                token_endpoint=data["token_endpoint"],
+            )
+        except (KeyError, ValueError, TypeError) as exc:
+            raise ValueError(f"Malformed credentials file {self._path}: {exc}") from exc
+
+    def load_any(self) -> StoredTokens | StaticCredentials | None:
+        """Return whichever credential kind the file holds, or None if absent.
+
+        Raises ValueError if the file exists but is malformed.
+        """
+        data = self._read()
+        if data is None:
+            return None
+        if isinstance(data, dict) and data.get("type") == "static":
+            token = data.get("api_token")
+            if not token:
+                raise ValueError(
+                    f"Malformed credentials file {self._path}: missing api_token"
+                )
+            return StaticCredentials(api_token=token)
+        return self.load()
+
+    def save(self, tokens: StoredTokens) -> None:
+        self._write(
+            {
+                "type": "oauth",
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+                "expires_at": tokens.expires_at,
+                "token_endpoint": tokens.token_endpoint,
+            }
+        )
+
+    def save_static(self, api_token: str) -> None:
+        self._write({"type": "static", "api_token": api_token})
 
 
 def tokens_from_response(
@@ -180,8 +226,25 @@ def _prompt_credentials() -> tuple[str, str]:
     return username, password
 
 
-def login_command() -> None:
-    """Entry point for `timetta-mcp login` (Resource Owner Password Grant)."""
+def _choose_method() -> str:
+    """Ask which login method to use; returns 'token' or 'password'."""
+    print("Timetta login method:")
+    print("  1) Token API — paste a long-lived token (recommended; works with SSO)")
+    print("  2) Email + password (OAuth password grant)")
+    choice = input("Select [1/2]: ").strip()
+    return "token" if choice == "1" else "password"
+
+
+def _token_login() -> None:
+    token = getpass.getpass("Paste Timetta Token API value: ").strip()
+    if not token:
+        print("Login aborted: token is required.")
+        raise SystemExit(1)
+    TokenStore(credentials_path()).save_static(token)
+    print("Timetta Token API saved.")
+
+
+def _password_login() -> None:
     username, password = _prompt_credentials()
     if not username or not password:
         print("Login aborted: username and password are required.")
@@ -192,6 +255,18 @@ def login_command() -> None:
         print(f"Login failed: {exc}")
         raise SystemExit(1)
     print("Timetta login successful — credentials saved.")
+
+
+def login_command() -> None:
+    """Entry point for `timetta-mcp login`.
+
+    Offers two methods, like the Timetta VS Code extension: paste a long-lived
+    Token API value, or log in with email/password (OAuth password grant).
+    """
+    if _choose_method() == "token":
+        _token_login()
+    else:
+        _password_login()
 
 
 class TokenProvider:

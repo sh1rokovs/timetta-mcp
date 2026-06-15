@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from timetta_mcp.auth import (
+    StaticCredentials,
     StoredTokens,
     TokenStore,
     TokenProvider,
@@ -95,6 +96,37 @@ def test_token_store_repr_hides_path_secrets(tmp_path):
     store = TokenStore(tmp_path / "creds.json")
     store.save(StoredTokens("super-secret-access", "r", time.time(), "e"))
     assert "super-secret-access" not in repr(store)
+
+
+def test_save_static_and_load_any_returns_static(tmp_path):
+    store = TokenStore(tmp_path / "creds.json")
+    store.save_static("my-token-api-value")
+    creds = store.load_any()
+    assert isinstance(creds, StaticCredentials)
+    assert creds.api_token == "my-token-api-value"
+
+
+def test_load_any_returns_oauth_tokens_for_oauth_file(tmp_path):
+    store = TokenStore(tmp_path / "creds.json")
+    store.save(StoredTokens("a", "r", 123.0, "ep"))
+    creds = store.load_any()
+    assert isinstance(creds, StoredTokens)
+    assert creds.access_token == "a"
+
+
+def test_load_any_none_when_missing(tmp_path):
+    assert TokenStore(tmp_path / "nope.json").load_any() is None
+
+
+def test_load_any_malformed_static_raises(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text('{"type": "static"}', encoding="utf-8")  # no api_token
+    with pytest.raises(ValueError, match="Malformed"):
+        TokenStore(path).load_any()
+
+
+def test_static_credentials_repr_hides_token():
+    assert "super-secret-token" not in repr(StaticCredentials("super-secret-token"))
 
 
 # ---------------------------------------------------------------------------

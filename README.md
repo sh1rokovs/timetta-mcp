@@ -34,23 +34,38 @@ is not needed.
 
 ## Authentication
 
-Two modes, chosen automatically:
+The server picks credentials in this order: `TIMETTA_API_TOKEN` env var →
+credentials file written by `timetta-mcp login` → otherwise an error asking you
+to log in.
 
-1. **Static token (CI / automation).** Set `TIMETTA_API_TOKEN`. Used whenever present.
-2. **OAuth password login.** Leave `TIMETTA_API_TOKEN` unset, then run a one-time
-   login:
+Run a one-time login and choose a method (like the Timetta VS Code extension):
 
-   ```bash
-   timetta-mcp login
-   ```
+```bash
+timetta-mcp login
+```
 
-   This prompts for your Timetta email and password, exchanges them for tokens
-   via the OAuth password grant (`grant_type=password`, client `external`), and
-   saves the refresh token to `TIMETTA_CREDENTIALS_PATH`. The password is never
-   stored — only the resulting tokens. The server then refreshes the access
-   token automatically (no further interaction). Re-run `timetta-mcp login` if
-   the refresh token expires (Timetta refresh tokens last roughly 15 days of
-   inactivity — see Timetta's API docs for the exact lifetime).
+1. **Token API** (recommended; works with SSO accounts). Paste a long-lived
+   token generated in Timetta settings (TTL ~1 year). It is saved to
+   `TIMETTA_CREDENTIALS_PATH` and sent as a Bearer token. No refresh needed.
+2. **Email + password** (OAuth password grant). Exchanges your Timetta
+   email/password for tokens via `grant_type=password` (client `external`) and
+   saves the refresh token. The password is never stored — only the resulting
+   tokens. The server refreshes the access token automatically; re-run
+   `timetta-mcp login` if the refresh token expires (Timetta refresh tokens last
+   roughly 15 days of inactivity).
+
+For CI / automation you can skip `login` entirely and set `TIMETTA_API_TOKEN` —
+it always takes priority.
+
+> Note: Timetta does not offer a browser `authorization_code`/`device_code` flow
+> for external clients (the `external` client supports only the password grant;
+> the `web_app` client used by the website forbids `offline_access` and a
+> loopback redirect). Use the Token API for a browser-mediated, long-lived
+> credential.
+
+> Tip: run `timetta-mcp` from this checkout with `uv run timetta-mcp …` (or
+> `uvx --no-cache --from . timetta-mcp …`). Plain `uvx --from <path>` caches the
+> built environment and may run stale code after you edit the source.
 
 ## Run
 

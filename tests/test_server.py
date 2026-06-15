@@ -141,6 +141,24 @@ async def test_static_token_mode_sends_bearer_header(monkeypatch):
     await client.aclose()
 
 
+@respx.mock
+async def test_static_token_from_credentials_file_sends_bearer(monkeypatch, tmp_path):
+    """`timetta-mcp login` → Token API: server reads the static token from file."""
+    from timetta_mcp.auth import TokenStore
+
+    monkeypatch.delenv("TIMETTA_API_TOKEN", raising=False)
+    creds = tmp_path / "creds.json"
+    monkeypatch.setenv("TIMETTA_CREDENTIALS_PATH", str(creds))
+    TokenStore(creds).save_static("file-tok")
+    route = respx.get("https://api.timetta.com/odata/Users").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+    client = server.get_client()
+    await client.query("Users")
+    assert route.calls.last.request.headers["Authorization"] == "Bearer file-tok"
+    await client.aclose()
+
+
 # --------------------------------------------------------------------------- #
 # Composite tools                                                             #
 # --------------------------------------------------------------------------- #

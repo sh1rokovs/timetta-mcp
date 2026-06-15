@@ -8,7 +8,13 @@ import os
 from mcp.server.fastmcp import FastMCP
 
 from . import metadata
-from .auth import TokenProvider, TokenStore, credentials_path, get_client_id
+from .auth import (
+    StaticCredentials,
+    TokenProvider,
+    TokenStore,
+    credentials_path,
+    get_client_id,
+)
 from .client import DEFAULT_BASE_URL, TimettaClient, TimettaError
 
 mcp = FastMCP("timetta")
@@ -36,6 +42,15 @@ def get_client() -> TimettaClient:
     static = os.environ.get("TIMETTA_API_TOKEN")
     if static:
         return TimettaClient(token=static, base_url=base_url)
+    # File-based credentials saved by `timetta-mcp login`: static Token API or OAuth.
+    try:
+        creds = TokenStore(credentials_path()).load_any()
+    except ValueError as exc:
+        raise TimettaError(
+            "Timetta credentials file is corrupted — run `timetta-mcp login`"
+        ) from exc
+    if isinstance(creds, StaticCredentials):
+        return TimettaClient(token=creds.api_token, base_url=base_url)
     return TimettaClient(token_provider=_get_token_provider(), base_url=base_url)
 
 
