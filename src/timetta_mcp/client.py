@@ -47,21 +47,56 @@ class TimettaClient:
         if skip is not None:
             params["$skip"] = int(skip)
 
-        resp = await self._get(f"{self._base}/{entity}", params=params, what=entity)
+        resp = await self._send("GET", f"{self._base}/{entity}", params=params, what=entity)
         return resp.json().get("value", [])
 
+    async def create(self, entity: str, data: dict) -> dict:
+        resp = await self._send(
+            "POST",
+            f"{self._base}/{entity}",
+            json=data,
+            headers={"Prefer": "return=representation"},
+            what=entity,
+        )
+        return resp.json()
+
+    async def update(self, entity: str, id: str, data: dict) -> dict:
+        resp = await self._send(
+            "PATCH",
+            f"{self._base}/{entity}({id})",
+            json=data,
+            headers={"Prefer": "return=representation"},
+            what=entity,
+        )
+        if resp.status_code == 204 or not resp.content:
+            return {"id": id, "updated": True}
+        return resp.json()
+
+    async def delete(self, entity: str, id: str) -> None:
+        await self._send(
+            "DELETE",
+            f"{self._base}/{entity}({id})",
+            what=entity,
+        )
+
     async def fetch_metadata_xml(self) -> str:
-        resp = await self._get(f"{self._base}/$metadata", params=None, what="$metadata")
+        resp = await self._send("GET", f"{self._base}/$metadata", what="$metadata")
         return resp.text
 
-    async def _get(
+    async def _send(
         self,
+        method: str,
         url: str,
-        params: dict[str, str | int] | None,
+        *,
+        params: dict[str, str | int] | None = None,
+        json: dict | None = None,
+        headers: dict[str, str] | None = None,
         what: str,
     ) -> httpx.Response:
         try:
-            resp = await self._client.get(url, params=params)
+            resp = await self._client.request(
+                method, url, params=params, json=json, headers=headers
+            )
         except httpx.RequestError as exc:
             raise TimettaError(f"Network error talking to Timetta: {exc}") from exc
         self._raise_for_status(resp, what)
@@ -78,7 +113,7 @@ class TimettaClient:
             )
         if code in (403, 404):
             raise TimettaError(f"No access or not found: {what}")
-        if code == 500:
+        if code in (400, 500):
             try:
                 message = resp.json().get("message") or resp.text
             except Exception:

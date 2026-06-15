@@ -88,3 +88,67 @@ async def test_fetch_metadata_xml_returns_text():
 def test_token_not_in_repr():
     client = TimettaClient(token="super-secret")
     assert "super-secret" not in repr(client)
+
+
+@respx.mock
+async def test_create_posts_body_and_returns_entity():
+    route = respx.post(f"{BASE}/Issues").mock(
+        return_value=httpx.Response(201, json={"id": "new", "name": "T"})
+    )
+    client = TimettaClient(token="tok")
+    created = await client.create("Issues", {"name": "T"})
+
+    assert created == {"id": "new", "name": "T"}
+    req = route.calls.last.request
+    assert req.headers["Authorization"] == "Bearer tok"
+    assert req.headers["Prefer"] == "return=representation"
+    assert req.read() == b'{"name":"T"}'
+    await client.aclose()
+
+
+@respx.mock
+async def test_update_patches_by_id_and_returns_body():
+    route = respx.patch(f"{BASE}/Issues(abc)").mock(
+        return_value=httpx.Response(200, json={"id": "abc", "name": "T2"})
+    )
+    client = TimettaClient(token="tok")
+    updated = await client.update("Issues", "abc", {"name": "T2"})
+
+    assert updated == {"id": "abc", "name": "T2"}
+    req = route.calls.last.request
+    assert req.method == "PATCH"
+    assert req.read() == b'{"name":"T2"}'
+    await client.aclose()
+
+
+@respx.mock
+async def test_update_204_returns_confirmation():
+    respx.patch(f"{BASE}/Issues(abc)").mock(return_value=httpx.Response(204))
+    client = TimettaClient(token="tok")
+    updated = await client.update("Issues", "abc", {"name": "T2"})
+    assert updated == {"id": "abc", "updated": True}
+    await client.aclose()
+
+
+@respx.mock
+async def test_delete_calls_delete_by_id():
+    route = respx.delete(f"{BASE}/Issues(abc)").mock(
+        return_value=httpx.Response(204)
+    )
+    client = TimettaClient(token="tok")
+    result = await client.delete("Issues", "abc")
+
+    assert result is None
+    assert route.calls.last.request.method == "DELETE"
+    await client.aclose()
+
+
+@respx.mock
+async def test_400_surfaces_validation_message():
+    respx.post(f"{BASE}/Issues").mock(
+        return_value=httpx.Response(400, json={"code": "X", "message": "name required"})
+    )
+    client = TimettaClient(token="t")
+    with pytest.raises(TimettaError, match="name required"):
+        await client.create("Issues", {})
+    await client.aclose()
