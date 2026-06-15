@@ -176,7 +176,14 @@ async def exchange_code(
     except httpx.RequestError as exc:
         raise TimettaError(f"Network error exchanging code: {exc}") from exc
     if resp.status_code != 200:
-        raise TimettaError(f"Token exchange failed: HTTP {resp.status_code}")
+        try:
+            payload = resp.json()
+            detail = payload.get("error_description") or payload.get("error", "")
+        except Exception:
+            detail = resp.text[:200]
+        raise TimettaError(
+            f"Token exchange failed: HTTP {resp.status_code} — {detail}".rstrip(" —")
+        )
     return tokens_from_response(resp.json(), token_endpoint)
 
 

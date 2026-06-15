@@ -322,3 +322,52 @@ async def test_finish_login_saves_tokens(tmp_path):
         store=store,
     )
     assert store.load().access_token == "a"
+
+
+@respx.mock
+async def test_exchange_code_non_200_raises_with_detail(tmp_path):
+    respx.post(TOKEN_EP).mock(
+        return_value=httpx.Response(
+            400, json={"error": "invalid_grant", "error_description": "bad code"}
+        )
+    )
+    with pytest.raises(TimettaError, match="bad code"):
+        await exchange_code(
+            TOKEN_EP, "client", "c", "v", "http://127.0.0.1:5000/callback"
+        )
+
+
+@respx.mock
+async def test_exchange_code_network_error_raises(tmp_path):
+    respx.post(TOKEN_EP).mock(side_effect=httpx.ConnectError("boom"))
+    with pytest.raises(TimettaError, match="Network error"):
+        await exchange_code(
+            TOKEN_EP, "client", "c", "v", "http://127.0.0.1:5000/callback"
+        )
+
+
+async def test_finish_login_empty_code_raises(tmp_path):
+    store = TokenStore(tmp_path / "creds.json")
+    with pytest.raises(TimettaError, match="code"):
+        await _finish_login(
+            returned_state="good",
+            expected_state="good",
+            code="",
+            verifier="v",
+            redirect_uri="http://127.0.0.1:5000/callback",
+            token_endpoint=TOKEN_EP,
+            client_id="client",
+            store=store,
+        )
+
+
+def test_pkce_s256_matches_rfc7636_vector():
+    # RFC 7636 Appendix B
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    expected_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    assert challenge == expected_challenge
