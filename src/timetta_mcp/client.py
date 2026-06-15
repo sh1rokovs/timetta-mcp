@@ -60,6 +60,18 @@ class TimettaClient:
         )
         return resp.json()
 
+    async def update(self, entity: str, id: str, data: dict) -> dict:
+        resp = await self._send(
+            "PATCH",
+            f"{self._base}/{entity}({id})",
+            json=data,
+            headers={"Prefer": "return=representation"},
+            what=entity,
+        )
+        if resp.status_code == 204 or not resp.content:
+            return {"id": id, "updated": True}
+        return resp.json()
+
     async def fetch_metadata_xml(self) -> str:
         resp = await self._send("GET", f"{self._base}/$metadata", what="$metadata")
         return resp.text

@@ -104,3 +104,27 @@ async def test_create_posts_body_and_returns_entity():
     assert req.headers["Prefer"] == "return=representation"
     assert req.read() == b'{"name":"T"}'
     await client.aclose()
+
+
+@respx.mock
+async def test_update_patches_by_id_and_returns_body():
+    route = respx.patch(f"{BASE}/Issues(abc)").mock(
+        return_value=httpx.Response(200, json={"id": "abc", "name": "T2"})
+    )
+    client = TimettaClient(token="tok")
+    updated = await client.update("Issues", "abc", {"name": "T2"})
+
+    assert updated == {"id": "abc", "name": "T2"}
+    req = route.calls.last.request
+    assert req.method == "PATCH"
+    assert req.read() == b'{"name":"T2"}'
+    await client.aclose()
+
+
+@respx.mock
+async def test_update_204_returns_confirmation():
+    respx.patch(f"{BASE}/Issues(abc)").mock(return_value=httpx.Response(204))
+    client = TimettaClient(token="tok")
+    updated = await client.update("Issues", "abc", {"name": "T2"})
+    assert updated == {"id": "abc", "updated": True}
+    await client.aclose()
