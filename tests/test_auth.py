@@ -218,3 +218,107 @@ async def test_provider_concurrent_calls_single_refresh(tmp_path):
     t1, t2 = await asyncio.gather(p.get_token(), p.get_token())
     assert t1 == t2 == "new"
     assert route.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 4: PKCE, authorize URL, code exchange, finish-login
+# ---------------------------------------------------------------------------
+
+import base64
+import hashlib
+from urllib.parse import parse_qs, urlparse
+
+from timetta_mcp.auth import (
+    build_authorize_url,
+    exchange_code,
+    generate_pkce,
+    _finish_login,
+)
+
+
+def test_generate_pkce_challenge_matches_verifier():
+    verifier, challenge = generate_pkce()
+    expected = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    assert challenge == expected
+    assert "=" not in challenge
+
+
+def test_build_authorize_url_has_pkce_and_state():
+    url = build_authorize_url(
+        "https://auth.timetta.com",
+        "client",
+        "http://127.0.0.1:5000/callback",
+        "the-challenge",
+        "the-state",
+    )
+    parsed = urlparse(url)
+    q = parse_qs(parsed.query)
+    assert parsed.path == "/connect/authorize"
+    assert q["response_type"] == ["code"]
+    assert q["client_id"] == ["client"]
+    assert q["redirect_uri"] == ["http://127.0.0.1:5000/callback"]
+    assert q["code_challenge"] == ["the-challenge"]
+    assert q["code_challenge_method"] == ["S256"]
+    assert q["state"] == ["the-state"]
+    assert q["scope"] == ["all offline_access"]
+
+
+@respx.mock
+async def test_exchange_code_posts_pkce_and_returns_tokens():
+    route = respx.post(TOKEN_EP).mock(
+        return_value=httpx.Response(
+            200,
+            json={"access_token": "a", "refresh_token": "r", "expires_in": 3600},
+        )
+    )
+    tokens = await exchange_code(
+        TOKEN_EP, "client", "the-code", "the-verifier", "http://127.0.0.1:5000/callback"
+    )
+    assert tokens.access_token == "a"
+    assert tokens.refresh_token == "r"
+    assert tokens.expires_at > time.time()
+    body = route.calls.last.request.read().decode()
+    assert "grant_type=authorization_code" in body
+    assert "code=the-code" in body
+    assert "code_verifier=the-verifier" in body
+
+
+@respx.mock
+async def test_finish_login_state_mismatch_raises(tmp_path):
+    store = TokenStore(tmp_path / "creds.json")
+    with pytest.raises(TimettaError, match="state"):
+        await _finish_login(
+            returned_state="bad",
+            expected_state="good",
+            code="c",
+            verifier="v",
+            redirect_uri="http://127.0.0.1:5000/callback",
+            token_endpoint=TOKEN_EP,
+            client_id="client",
+            store=store,
+        )
+
+
+@respx.mock
+async def test_finish_login_saves_tokens(tmp_path):
+    respx.post(TOKEN_EP).mock(
+        return_value=httpx.Response(
+            200, json={"access_token": "a", "refresh_token": "r", "expires_in": 3600}
+        )
+    )
+    store = TokenStore(tmp_path / "creds.json")
+    await _finish_login(
+        returned_state="good",
+        expected_state="good",
+        code="c",
+        verifier="v",
+        redirect_uri="http://127.0.0.1:5000/callback",
+        token_endpoint=TOKEN_EP,
+        client_id="client",
+        store=store,
+    )
+    assert store.load().access_token == "a"

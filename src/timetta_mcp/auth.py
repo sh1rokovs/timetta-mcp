@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import os
+import secrets
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlencode
 
 import httpx
 
@@ -120,6 +124,80 @@ def tokens_from_response(
         expires_at=time.time() + int(payload.get("expires_in", 3600)),
         token_endpoint=token_endpoint,
     )
+
+
+def generate_pkce() -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(64)
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    return verifier, challenge
+
+
+def build_authorize_url(
+    auth_url: str,
+    client_id: str,
+    redirect_uri: str,
+    challenge: str,
+    state: str,
+    scope: str = "all offline_access",
+) -> str:
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    }
+    return f"{auth_url}/connect/authorize?{urlencode(params)}"
+
+
+async def exchange_code(
+    token_endpoint: str,
+    client_id: str,
+    code: str,
+    verifier: str,
+    redirect_uri: str,
+) -> StoredTokens:
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "code": code,
+        "code_verifier": verifier,
+        "redirect_uri": redirect_uri,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            resp = await c.post(token_endpoint, data=data)
+    except httpx.RequestError as exc:
+        raise TimettaError(f"Network error exchanging code: {exc}") from exc
+    if resp.status_code != 200:
+        raise TimettaError(f"Token exchange failed: HTTP {resp.status_code}")
+    return tokens_from_response(resp.json(), token_endpoint)
+
+
+async def _finish_login(
+    *,
+    returned_state: str,
+    expected_state: str,
+    code: str,
+    verifier: str,
+    redirect_uri: str,
+    token_endpoint: str,
+    client_id: str,
+    store: TokenStore,
+) -> StoredTokens:
+    if returned_state != expected_state:
+        raise TimettaError("OAuth state mismatch — aborting login")
+    if not code:
+        raise TimettaError("No authorization code received")
+    tokens = await exchange_code(token_endpoint, client_id, code, verifier, redirect_uri)
+    store.save(tokens)
+    return tokens
 
 
 class TokenProvider:
