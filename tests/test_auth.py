@@ -256,16 +256,7 @@ async def test_provider_concurrent_calls_single_refresh(tmp_path):
 # Task 4: Resource Owner Password Grant login
 # ---------------------------------------------------------------------------
 
-from urllib.parse import parse_qs, urlparse
-
-from timetta_mcp.auth import (
-    browser_login,
-    build_browser_authorize_url,
-    exchange_browser_code,
-    generate_pkce,
-    parse_redirect,
-    password_login,
-)
+from timetta_mcp.auth import password_login
 
 
 @respx.mock
@@ -325,109 +316,6 @@ async def test_password_login_200_without_access_token_raises(tmp_path):
     with pytest.raises(TimettaError, match="timetta-mcp login"):
         await password_login(
             "user", "pw", auth_url="https://auth.timetta.com", client_id="c", store=store
-        )
-
-
-# ---------------------------------------------------------------------------
-# Browser sign-in (web_app, authorization_code + PKCE, manual code paste)
-# ---------------------------------------------------------------------------
-
-
-def test_generate_pkce_challenge_matches_verifier():
-    import base64
-    import hashlib
-
-    verifier, challenge = generate_pkce()
-    expected = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
-    assert challenge == expected and "=" not in challenge
-
-
-def test_build_browser_authorize_url_uses_web_app_and_fixed_redirect():
-    url = build_browser_authorize_url("https://auth.timetta.com", "st", "ch")
-    q = parse_qs(urlparse(url).query)
-    assert urlparse(url).path == "/connect/authorize"
-    assert q["client_id"] == ["web_app"]
-    assert q["redirect_uri"] == ["https://app.timetta.com/auth-callback"]
-    assert q["scope"] == ["openid profile all"]  # no offline_access
-    assert q["response_type"] == ["code"]
-    assert q["code_challenge"] == ["ch"]
-    assert q["code_challenge_method"] == ["S256"]
-    assert q["state"] == ["st"]
-
-
-def test_parse_redirect_full_url_extracts_code_and_state():
-    code, state = parse_redirect(
-        "https://app.timetta.com/auth-callback?code=abc&state=xyz"
-    )
-    assert code == "abc" and state == "xyz"
-
-
-def test_parse_redirect_bare_code_returns_none_state():
-    code, state = parse_redirect("just-a-code")
-    assert code == "just-a-code" and state is None
-
-
-@respx.mock
-async def test_exchange_browser_code_posts_authorization_code():
-    route = respx.post(TOKEN_EP).mock(
-        return_value=httpx.Response(200, json={"access_token": "a", "expires_in": 3600})
-    )
-    tokens = await exchange_browser_code(TOKEN_EP, "the-code", "the-verifier")
-    assert tokens.access_token == "a"
-    assert tokens.refresh_token == ""  # web_app issues no refresh token
-    body = route.calls.last.request.read().decode()
-    assert "grant_type=authorization_code" in body
-    assert "client_id=web_app" in body
-    assert "code=the-code" in body
-    assert "code_verifier=the-verifier" in body
-
-
-@respx.mock
-async def test_browser_login_saves_tokens_with_matching_state(tmp_path):
-    respx.post(TOKEN_EP).mock(
-        return_value=httpx.Response(200, json={"access_token": "a", "expires_in": 3600})
-    )
-    store = TokenStore(tmp_path / "creds.json")
-    seen = {}
-
-    def opener(url):
-        seen["url"] = url
-
-    def prompt(_msg):
-        state = parse_qs(urlparse(seen["url"]).query)["state"][0]
-        return f"https://app.timetta.com/auth-callback?code=the-code&state={state}"
-
-    tokens = await browser_login(
-        auth_url="https://auth.timetta.com", store=store, opener=opener, prompt=prompt
-    )
-    assert tokens.access_token == "a"
-    assert store.load().access_token == "a"
-    assert parse_qs(urlparse(seen["url"]).query)["client_id"] == ["web_app"]
-
-
-async def test_browser_login_state_mismatch_raises(tmp_path):
-    store = TokenStore(tmp_path / "creds.json")
-    with pytest.raises(TimettaError, match="state"):
-        await browser_login(
-            auth_url="https://auth.timetta.com",
-            store=store,
-            opener=lambda url: None,
-            prompt=lambda _m: "https://app.timetta.com/auth-callback?code=c&state=WRONG",
-        )
-
-
-async def test_browser_login_empty_paste_raises(tmp_path):
-    store = TokenStore(tmp_path / "creds.json")
-    with pytest.raises(TimettaError, match="code"):
-        await browser_login(
-            auth_url="https://auth.timetta.com",
-            store=store,
-            opener=lambda url: None,
-            prompt=lambda _m: "",
         )
 
 

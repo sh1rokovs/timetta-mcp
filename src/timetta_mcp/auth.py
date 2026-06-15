@@ -1,38 +1,24 @@
 """OAuth 2.0 support for Timetta: token storage, refresh, and login.
 
-`timetta-mcp login` offers three methods:
+`timetta-mcp login` offers the two methods Timetta documents for integrations:
 - Token API — paste a long-lived static token (recommended; works with SSO).
 - Email + password — OAuth password grant via the public `external` client.
-- Browser — authorization_code + PKCE via the `web_app` client. Its redirect is
-  fixed to https://app.timetta.com/auth-callback (no loopback), so the user
-  pastes the resulting code back; `web_app` is denied `offline_access`, so there
-  is no refresh token and the access token lasts ~1 hour.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import getpass
-import hashlib
 import json
 import os
-import secrets
 import tempfile
 import time
-import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
 from .client import TimettaError
-
-# Browser sign-in uses the same public client the Timetta web app uses.
-BROWSER_CLIENT_ID = "web_app"
-BROWSER_REDIRECT_URI = "https://app.timetta.com/auth-callback"
-BROWSER_SCOPE = "openid profile all"  # offline_access is rejected for web_app
 
 DEFAULT_AUTH_URL = "https://auth.timetta.com"
 DEFAULT_CLIENT_ID = "external"
@@ -234,106 +220,6 @@ async def password_login(
     return tokens
 
 
-def generate_pkce() -> tuple[str, str]:
-    verifier = secrets.token_urlsafe(64)
-    challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
-    return verifier, challenge
-
-
-def build_browser_authorize_url(auth_url: str, state: str, challenge: str) -> str:
-    params = {
-        "response_type": "code",
-        "client_id": BROWSER_CLIENT_ID,
-        "redirect_uri": BROWSER_REDIRECT_URI,
-        "scope": BROWSER_SCOPE,
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    return f"{auth_url}/connect/authorize?{urlencode(params)}"
-
-
-def parse_redirect(pasted: str) -> tuple[str, str | None]:
-    """Accept a full redirect URL or a bare code; return (code, state-or-None)."""
-    pasted = pasted.strip()
-    if pasted.startswith("http") or "?" in pasted or "code=" in pasted:
-        q = parse_qs(urlparse(pasted).query)
-        return q.get("code", [""])[0], q.get("state", [None])[0]
-    return pasted, None
-
-
-async def exchange_browser_code(
-    token_endpoint: str, code: str, verifier: str
-) -> StoredTokens:
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": BROWSER_CLIENT_ID,
-        "code": code,
-        "code_verifier": verifier,
-        "redirect_uri": BROWSER_REDIRECT_URI,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            resp = await c.post(token_endpoint, data=data)
-    except httpx.RequestError as exc:
-        raise TimettaError(f"Network error exchanging code: {exc}") from exc
-    if resp.status_code != 200:
-        try:
-            payload = resp.json()
-            detail = payload.get("error_description") or payload.get("error", "")
-        except Exception:
-            detail = resp.text[:200]
-        raise TimettaError(
-            f"Code exchange failed: HTTP {resp.status_code} — {detail}".rstrip(" —")
-        )
-    return tokens_from_response(resp.json(), token_endpoint)
-
-
-async def browser_login(
-    *,
-    auth_url: str | None = None,
-    store: TokenStore | None = None,
-    opener=None,
-    prompt=None,
-) -> StoredTokens:
-    """Browser authorization_code + PKCE via `web_app`; user pastes the code.
-
-    `web_app`'s redirect_uri is fixed to app.timetta.com (no loopback), so after
-    signing in the user copies the resulting URL/code back here. There is no
-    refresh token (offline_access denied), so the saved access token lasts ~1h.
-    """
-    auth_url = (auth_url or get_auth_url()).rstrip("/")
-    store = store or TokenStore(credentials_path())
-    opener = opener or webbrowser.open
-    prompt = prompt or input
-
-    verifier, challenge = generate_pkce()
-    state = secrets.token_urlsafe(16)
-    url = build_browser_authorize_url(auth_url, state, challenge)
-
-    opener(url)
-    print("Opened your browser to sign in to Timetta (SSO supported).")
-    print(f"If it did not open, visit:\n{url}\n")
-    print(
-        "After signing in your browser lands on a page at "
-        "app.timetta.com/auth-callback (it may show an error — that is fine)."
-    )
-    pasted = prompt("Paste that full URL (or just the code): ").strip()
-
-    code, returned_state = parse_redirect(pasted)
-    if not code:
-        raise TimettaError("No authorization code found in the pasted value")
-    if returned_state is not None and returned_state != state:
-        raise TimettaError("OAuth state mismatch — aborting login")
-    tokens = await exchange_browser_code(f"{auth_url}/connect/token", code, verifier)
-    store.save(tokens)
-    return tokens
-
-
 def _prompt_credentials() -> tuple[str, str]:
     username = input("Timetta login (email): ").strip()
     password = getpass.getpass("Timetta password: ")
@@ -341,13 +227,12 @@ def _prompt_credentials() -> tuple[str, str]:
 
 
 def _choose_method() -> str:
-    """Ask which login method to use; returns 'token', 'password' or 'browser'."""
+    """Ask which login method to use; returns 'token' or 'password'."""
     print("Timetta login method:")
     print("  1) Token API — paste a long-lived token (recommended; works with SSO)")
     print("  2) Email + password (OAuth password grant)")
-    print("  3) Browser sign-in (web_app; ~1h session, no auto-refresh)")
-    choice = input("Select [1/2/3]: ").strip()
-    return {"1": "token", "3": "browser"}.get(choice, "password")
+    choice = input("Select [1/2]: ").strip()
+    return "token" if choice == "1" else "password"
 
 
 def _token_login() -> None:
@@ -372,30 +257,14 @@ def _password_login() -> None:
     print("Timetta login successful — credentials saved.")
 
 
-def _browser_login() -> None:
-    try:
-        asyncio.run(browser_login())
-    except TimettaError as exc:
-        print(f"Login failed: {exc}")
-        raise SystemExit(1)
-    print(
-        "Timetta browser login successful — access token saved.\n"
-        "Note: no refresh token (web_app), so re-run `timetta-mcp login` "
-        "when it expires (~1 hour)."
-    )
-
-
 def login_command() -> None:
     """Entry point for `timetta-mcp login`.
 
-    Offers three methods (see module docstring): Token API, email/password, or
-    browser sign-in.
+    Offers the two methods Timetta documents for integrations: paste a long-lived
+    Token API value, or log in with email/password (OAuth password grant).
     """
-    method = _choose_method()
-    if method == "token":
+    if _choose_method() == "token":
         _token_login()
-    elif method == "browser":
-        _browser_login()
     else:
         _password_login()
 

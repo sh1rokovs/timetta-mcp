@@ -53,13 +53,9 @@ timetta-mcp login
    tokens. The server refreshes the access token automatically; re-run
    `timetta-mcp login` if the refresh token expires (Timetta refresh tokens last
    roughly 15 days of inactivity).
-3. **Browser sign-in** (SSO). Opens your browser to Timetta via the `web_app`
-   client (authorization_code + PKCE). Its redirect is fixed to
-   `https://app.timetta.com/auth-callback` (no loopback), so after signing in
-   you paste the resulting URL/code back into the terminal. `web_app` is denied
-   `offline_access`, so there is **no refresh token** — the saved access token
-   lasts ~1 hour and you must re-run `timetta-mcp login` afterwards. Prefer the
-   Token API for a long-lived, browser-mediated credential.
+
+These are the only two methods Timetta documents for integrations; it offers no
+self-service OAuth client registration or browser `authorization_code` flow.
 
 For CI / automation you can skip `login` entirely and set `TIMETTA_API_TOKEN` —
 it always takes priority.

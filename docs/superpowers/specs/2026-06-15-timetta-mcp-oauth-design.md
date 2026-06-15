@@ -10,21 +10,24 @@
 > что подтверждено рабочим VS Code-расширением Timetta.
 >
 > **Ревизия 2 (2026-06-15): `login` стал мультиметодным.** По факту реализации
-> `timetta-mcp login` предлагает выбор из трёх методов:
+> `timetta-mcp login` предлагает выбор из двух методов — ровно тех, что Timetta
+> документирует для интеграций ([docs/api/authentication](https://timetta.com/ru/docs/api/authentication)):
 > 1. **Token API** — вставка долгоживущего статического токена (TTL ~1 год),
 >    сохраняется в файл; сервер шлёт его как Bearer. Рекомендуется, работает с SSO.
 > 2. **Email + password** — ROPG (`grant_type=password`, клиент `external`),
 >    с `refresh_token` (~15 дней).
-> 3. **Браузер** — authorization_code + PKCE через клиент `web_app` (тот же, что
->    у сайта). redirect_uri жёстко `https://app.timetta.com/auth-callback` (без
->    loopback), поэтому код вставляется вручную; `web_app` не отдаёт
->    `offline_access` → **без refresh**, access_token ~1 час. Подтверждено
->    пробами: `web_app` — публичный клиент (обмен кода → `invalid_grant`, не
->    `invalid_client`).
 >
 > Файл кредов теперь хранит либо `{"type":"static", api_token}`, либо OAuth-токены
 > (`StoredTokens`); `get_client()` выбирает режим по содержимому. Разделы ниже про
 > исходный одиночный браузерный/ROPG-флоу оставлены как история.
+>
+> **Браузерный вход отвергнут окончательно.** Документация Timetta прямо пишет:
+> «Only one grant type is supported for integration solutions: Resource Owner
+> Password Grant». Самостоятельной регистрации OAuth-клиента нет
+> (`registration_endpoint` отсутствует, `/connect/register` → 302). Внутренний
+> клиент сайта `web_app` поддерживает authorization_code, но без `offline_access`
+> (нет refresh, ~1 час) и с фиксированным redirect на `app.timetta.com` — для
+> постоянного MCP-сервера непригоден.
 
 ## Проблема
 
