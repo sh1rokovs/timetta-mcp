@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import http.server
 import json
 import os
 import secrets
 import tempfile
 import time
+import urllib.parse
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
@@ -207,6 +210,109 @@ async def _finish_login(
     return tokens
 
 
+class _LoopbackServer(http.server.HTTPServer):
+    timed_out_flag = False
+
+    def handle_timeout(self) -> None:
+        self.timed_out_flag = True
+
+
+def _capture_redirect(
+    make_authorize_url,
+    *,
+    redirect_port: int = 0,
+    timeout: float = 120.0,
+) -> tuple[dict[str, str | None], str]:
+    """Bind a loopback server, open the browser, capture the OAuth redirect.
+
+    `make_authorize_url` is a callable taking the (now-known) redirect_uri and
+    returning the full authorize URL. Returns (captured_params, redirect_uri_used).
+    Skips non-OAuth requests (e.g. favicon) and raises on timeout.
+    """
+    captured: dict[str, str | None] = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            code = params.get("code", [None])[0]
+            error = params.get("error", [None])[0]
+            if code or error:
+                captured["code"] = code
+                captured["state"] = params.get("state", [None])[0]
+                captured["error"] = error
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"Timetta login complete. You can close this tab.")
+            else:
+                self.send_response(204)  # favicon/preflight — ignore, keep waiting
+                self.end_headers()
+
+        def log_message(self, format, *args) -> None:  # noqa: A002 — silence stderr
+            pass
+
+    httpd = _LoopbackServer(("127.0.0.1", redirect_port), Handler)
+    actual_port = httpd.server_address[1]
+    redirect_uri = f"http://127.0.0.1:{actual_port}/callback"
+    httpd.timeout = timeout
+    try:
+        authorize_url = make_authorize_url(redirect_uri)
+        webbrowser.open(authorize_url)
+        print(f"If your browser did not open, visit:\n{authorize_url}")
+        while not captured and not httpd.timed_out_flag:
+            httpd.handle_request()
+    finally:
+        httpd.server_close()
+    if not captured:
+        raise TimettaError("Login timed out waiting for the browser redirect")
+    return captured, redirect_uri
+
+
+async def login(
+    *,
+    auth_url: str | None = None,
+    client_id: str | None = None,
+    store: TokenStore | None = None,
+    redirect_port: int = 0,
+    timeout: float = 120.0,
+) -> StoredTokens:
+    auth_url = (auth_url or get_auth_url()).rstrip("/")
+    client_id = client_id or get_client_id()
+    store = store or TokenStore(credentials_path())
+
+    verifier, challenge = generate_pkce()
+    state = secrets.token_urlsafe(16)
+
+    def make_authorize_url(redirect_uri: str) -> str:
+        return build_authorize_url(auth_url, client_id, redirect_uri, challenge, state)
+
+    captured, redirect_uri = _capture_redirect(
+        make_authorize_url, redirect_port=redirect_port, timeout=timeout
+    )
+    if captured.get("error"):
+        raise TimettaError(f"Authorization failed: {captured['error']}")
+    return await _finish_login(
+        returned_state=captured.get("state") or "",
+        expected_state=state,
+        code=captured.get("code") or "",
+        verifier=verifier,
+        redirect_uri=redirect_uri,
+        token_endpoint=f"{auth_url}/connect/token",
+        client_id=client_id,
+        store=store,
+    )
+
+
+def login_command() -> None:
+    """Entry point for `timetta-mcp login`."""
+    try:
+        asyncio.run(login())
+    except TimettaError as exc:
+        print(f"Login failed: {exc}")
+        raise SystemExit(1)
+    print("Timetta login successful — credentials saved.")
+
+
 class TokenProvider:
     """Process-level provider: serves a valid access_token, refreshing as needed."""
 
@@ -225,7 +331,12 @@ class TokenProvider:
 
     def _ensure_loaded(self) -> StoredTokens:
         if self._tokens is None:
-            self._tokens = self._store.load()
+            try:
+                self._tokens = self._store.load()
+            except ValueError as exc:
+                raise TimettaError(
+                    "Timetta credentials file is corrupted — run `timetta-mcp login`"
+                ) from exc
         if self._tokens is None:
             raise TimettaError(
                 "No valid Timetta credentials — run `timetta-mcp login`"

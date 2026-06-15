@@ -1,5 +1,8 @@
 import json
 
+import httpx
+import respx
+
 from timetta_mcp import server
 
 SAMPLE_XML = """<?xml version="1.0" encoding="utf-8"?>
@@ -82,11 +85,13 @@ async def test_get_entity_schema_unknown_returns_error_text(monkeypatch):
     assert out.startswith("Error:")
 
 
-async def test_missing_token_returns_error_text(monkeypatch):
+async def test_missing_token_falls_back_to_oauth_login_hint(monkeypatch, tmp_path):
     monkeypatch.delenv("TIMETTA_API_TOKEN", raising=False)
+    monkeypatch.setenv("TIMETTA_CREDENTIALS_PATH", str(tmp_path / "none.json"))
+    server._reset_token_provider()
     out = await server._list_entities()
     assert out.startswith("Error:")
-    assert "TIMETTA_API_TOKEN" in out
+    assert "timetta-mcp login" in out
 
 
 async def test_create_entity_returns_json_and_closes(monkeypatch):
@@ -115,12 +120,25 @@ async def test_delete_entity_returns_deleted_id(monkeypatch):
     assert fake.last_write == ("delete", "Issues", "abc")
 
 
-async def test_create_entity_missing_token_returns_error(monkeypatch):
+async def test_create_entity_missing_token_falls_back_to_login_hint(monkeypatch, tmp_path):
     monkeypatch.delenv("TIMETTA_API_TOKEN", raising=False)
-    monkeypatch.setattr(server, "get_client", server.get_client)
+    monkeypatch.setenv("TIMETTA_CREDENTIALS_PATH", str(tmp_path / "none.json"))
+    server._reset_token_provider()
     out = await server._create_entity("Issues", {"name": "T"})
     assert out.startswith("Error:")
-    assert "TIMETTA_API_TOKEN" in out
+    assert "timetta-mcp login" in out
+
+
+@respx.mock
+async def test_static_token_mode_sends_bearer_header(monkeypatch):
+    monkeypatch.setenv("TIMETTA_API_TOKEN", "tok")
+    route = respx.get("https://api.timetta.com/odata/Users").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+    client = server.get_client()
+    await client.query("Users")
+    assert route.calls.last.request.headers["Authorization"] == "Bearer tok"
+    await client.aclose()
 
 
 # --------------------------------------------------------------------------- #
