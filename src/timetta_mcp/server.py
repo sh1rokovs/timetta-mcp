@@ -8,17 +8,34 @@ import os
 from mcp.server.fastmcp import FastMCP
 
 from . import metadata
+from .auth import TokenProvider, TokenStore, credentials_path, get_client_id
 from .client import DEFAULT_BASE_URL, TimettaClient, TimettaError
 
 mcp = FastMCP("timetta")
 
 
+_token_provider: TokenProvider | None = None
+
+
+def _reset_token_provider() -> None:
+    """Drop the cached provider (used by tests after changing env)."""
+    global _token_provider
+    _token_provider = None
+
+
+def _get_token_provider() -> TokenProvider:
+    global _token_provider
+    if _token_provider is None:
+        _token_provider = TokenProvider(TokenStore(credentials_path()), get_client_id())
+    return _token_provider
+
+
 def get_client() -> TimettaClient:
-    token = os.environ.get("TIMETTA_API_TOKEN")
-    if not token:
-        raise TimettaError("TIMETTA_API_TOKEN environment variable is not set")
     base_url = os.environ.get("TIMETTA_BASE_URL", DEFAULT_BASE_URL)
-    return TimettaClient(token=token, base_url=base_url)
+    static = os.environ.get("TIMETTA_API_TOKEN")
+    if static:
+        return TimettaClient(token=static, base_url=base_url)
+    return TimettaClient(token_provider=_get_token_provider(), base_url=base_url)
 
 
 def _dumps(value) -> str:
