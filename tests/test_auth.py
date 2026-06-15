@@ -439,3 +439,11 @@ def test_capture_redirect_binds_real_port_and_skips_favicon(monkeypatch):
     assert ":0/" not in redirect_uri
     port = int(redirect_uri.split(":")[2].split("/")[0])
     assert port > 0
+
+
+async def test_provider_corrupt_file_raises_login_hint(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text("{garbage", encoding="utf-8")
+    p = TokenProvider(TokenStore(path), "client")
+    with pytest.raises(TimettaError, match="timetta-mcp login"):
+        await p.get_token()

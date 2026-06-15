@@ -331,7 +331,12 @@ class TokenProvider:
 
     def _ensure_loaded(self) -> StoredTokens:
         if self._tokens is None:
-            self._tokens = self._store.load()
+            try:
+                self._tokens = self._store.load()
+            except ValueError as exc:
+                raise TimettaError(
+                    "Timetta credentials file is corrupted — run `timetta-mcp login`"
+                ) from exc
         if self._tokens is None:
             raise TimettaError(
                 "No valid Timetta credentials — run `timetta-mcp login`"

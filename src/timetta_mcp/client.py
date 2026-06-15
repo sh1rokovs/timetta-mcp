@@ -235,12 +235,16 @@ class TimettaClient:
         except httpx.RequestError as exc:
             raise TimettaError(f"Network error talking to Timetta: {exc}") from exc
 
-    @staticmethod
-    def _raise_for_status(resp: httpx.Response, what: str) -> None:
+    def _raise_for_status(self, resp: httpx.Response, what: str) -> None:
         code = resp.status_code
         if code < 400:
             return
         if code == 401:
+            if self._provider.can_refresh():
+                raise TimettaError(
+                    "Unauthorized — Timetta credentials are invalid or expired; "
+                    "re-run `timetta-mcp login`"
+                )
             raise TimettaError(
                 "Unauthorized — check TIMETTA_API_TOKEN (invalid or expired)"
             )

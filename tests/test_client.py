@@ -197,7 +197,7 @@ async def test_query_second_401_raises():
     respx.get(f"{BASE}/Users").mock(return_value=httpx.Response(401))
     provider = _RefreshOnceProvider()
     client = TimettaClient(token_provider=provider)
-    with pytest.raises(TimettaError):
+    with pytest.raises(TimettaError, match="timetta-mcp login"):
         await client.query("Users")
     assert provider.refreshed is True       # refreshed exactly once
     assert len(provider.tokens) == 1        # popped exactly once
