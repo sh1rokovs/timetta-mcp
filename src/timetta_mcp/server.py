@@ -25,6 +25,7 @@ def _reset_token_provider() -> None:
 
 def _get_token_provider() -> TokenProvider:
     global _token_provider
+    # Built once at first use; env vars are fixed at process start for a running server.
     if _token_provider is None:
         _token_provider = TokenProvider(TokenStore(credentials_path()), get_client_id())
     return _token_provider

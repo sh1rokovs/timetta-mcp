@@ -1,5 +1,8 @@
 import json
 
+import httpx
+import respx
+
 from timetta_mcp import server
 
 SAMPLE_XML = """<?xml version="1.0" encoding="utf-8"?>
@@ -126,11 +129,15 @@ async def test_create_entity_missing_token_falls_back_to_login_hint(monkeypatch,
     assert "timetta-mcp login" in out
 
 
-async def test_static_token_mode_uses_static_provider(monkeypatch):
+@respx.mock
+async def test_static_token_mode_sends_bearer_header(monkeypatch):
     monkeypatch.setenv("TIMETTA_API_TOKEN", "tok")
+    route = respx.get("https://api.timetta.com/odata/Users").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
     client = server.get_client()
-    assert await client._provider.get_token() == "tok"
-    assert client._provider.can_refresh() is False
+    await client.query("Users")
+    assert route.calls.last.request.headers["Authorization"] == "Bearer tok"
     await client.aclose()
 
 
