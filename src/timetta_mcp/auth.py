@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,31 +54,44 @@ class TokenStore:
         return f"TokenStore(path={str(self._path)!r})"
 
     def load(self) -> StoredTokens | None:
+        """Return stored tokens, or None if the file does not exist.
+
+        Raises ValueError if the file exists but is malformed.
+        """
         if not self._path.exists():
             return None
-        data = json.loads(self._path.read_text(encoding="utf-8"))
-        return StoredTokens(
-            access_token=data["access_token"],
-            refresh_token=data["refresh_token"],
-            expires_at=float(data["expires_at"]),
-            token_endpoint=data["token_endpoint"],
-        )
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            return StoredTokens(
+                access_token=data["access_token"],
+                refresh_token=data["refresh_token"],
+                expires_at=float(data["expires_at"]),
+                token_endpoint=data["token_endpoint"],
+            )
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            raise ValueError(f"Malformed credentials file {self._path}: {exc}") from exc
 
     def save(self, tokens: StoredTokens) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(
-                {
-                    "access_token": tokens.access_token,
-                    "refresh_token": tokens.refresh_token,
-                    "expires_at": tokens.expires_at,
-                    "token_endpoint": tokens.token_endpoint,
-                }
-            ),
-            encoding="utf-8",
+        payload = json.dumps(
+            {
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+                "expires_at": tokens.expires_at,
+                "token_endpoint": tokens.token_endpoint,
+            }
         )
-        os.replace(tmp, self._path)
+        fd, tmp_name = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp_name, self._path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
         try:
             os.chmod(self._path, 0o600)
         except OSError:

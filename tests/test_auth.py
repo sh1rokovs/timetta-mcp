@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 from timetta_mcp.auth import (
     StoredTokens,
     TokenStore,
@@ -24,6 +26,11 @@ def test_get_auth_url_env_override(monkeypatch):
 def test_get_client_id_env_override(monkeypatch):
     monkeypatch.setenv("TIMETTA_CLIENT_ID", "my-client")
     assert get_client_id() == "my-client"
+
+
+def test_get_client_id_default(monkeypatch):
+    monkeypatch.delenv("TIMETTA_CLIENT_ID", raising=False)
+    assert get_client_id() == "external"
 
 
 def test_credentials_path_env_override(monkeypatch, tmp_path):
@@ -53,6 +60,14 @@ def test_token_store_round_trip(tmp_path):
 
 def test_token_store_load_missing_returns_none(tmp_path):
     assert TokenStore(tmp_path / "nope.json").load() is None
+
+
+def test_token_store_load_malformed_raises(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    store = TokenStore(path)
+    with pytest.raises(ValueError, match="Malformed"):
+        store.load()
 
 
 def test_token_store_save_is_atomic_overwrite(tmp_path):
