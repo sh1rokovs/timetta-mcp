@@ -1,21 +1,20 @@
-"""OAuth 2.0 support for Timetta: token storage, refresh, and browser login."""
+"""OAuth 2.0 support for Timetta: token storage, refresh, and password login.
+
+Login uses the Resource Owner Password Grant (`grant_type=password`): the
+Timetta public client `external` supports it (and `refresh_token`), but not the
+browser authorization_code flow with a loopback redirect_uri.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import http.server
+import getpass
 import json
 import os
-import secrets
 import tempfile
 import time
-import urllib.parse
-import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlencode
 
 import httpx
 
@@ -129,55 +128,38 @@ def tokens_from_response(
     )
 
 
-def generate_pkce() -> tuple[str, str]:
-    verifier = secrets.token_urlsafe(64)
-    challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
-    return verifier, challenge
-
-
-def build_authorize_url(
-    auth_url: str,
-    client_id: str,
-    redirect_uri: str,
-    challenge: str,
-    state: str,
+async def password_login(
+    username: str,
+    password: str,
+    *,
+    auth_url: str | None = None,
+    client_id: str | None = None,
+    store: TokenStore | None = None,
     scope: str = "all offline_access",
-) -> str:
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": scope,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "state": state,
-    }
-    return f"{auth_url}/connect/authorize?{urlencode(params)}"
-
-
-async def exchange_code(
-    token_endpoint: str,
-    client_id: str,
-    code: str,
-    verifier: str,
-    redirect_uri: str,
 ) -> StoredTokens:
+    """Log in with the Resource Owner Password Grant and persist the tokens.
+
+    Posts `grant_type=password` to the token endpoint; the Timetta public client
+    `external` supports this grant (and `refresh_token`). On success the tokens
+    are saved via `store`; nothing is persisted on failure.
+    """
+    auth_url = (auth_url or get_auth_url()).rstrip("/")
+    client_id = client_id or get_client_id()
+    store = store or TokenStore(credentials_path())
+    token_endpoint = f"{auth_url}/connect/token"
+
     data = {
-        "grant_type": "authorization_code",
+        "grant_type": "password",
         "client_id": client_id,
-        "code": code,
-        "code_verifier": verifier,
-        "redirect_uri": redirect_uri,
+        "username": username,
+        "password": password,
+        "scope": scope,
     }
     try:
         async with httpx.AsyncClient(timeout=30.0) as c:
             resp = await c.post(token_endpoint, data=data)
     except httpx.RequestError as exc:
-        raise TimettaError(f"Network error exchanging code: {exc}") from exc
+        raise TimettaError(f"Network error during login: {exc}") from exc
     if resp.status_code != 200:
         try:
             payload = resp.json()
@@ -185,128 +167,27 @@ async def exchange_code(
         except Exception:
             detail = resp.text[:200]
         raise TimettaError(
-            f"Token exchange failed: HTTP {resp.status_code} — {detail}".rstrip(" —")
+            f"Login failed: HTTP {resp.status_code} — {detail}".rstrip(" —")
         )
-    return tokens_from_response(resp.json(), token_endpoint)
-
-
-async def _finish_login(
-    *,
-    returned_state: str,
-    expected_state: str,
-    code: str,
-    verifier: str,
-    redirect_uri: str,
-    token_endpoint: str,
-    client_id: str,
-    store: TokenStore,
-) -> StoredTokens:
-    if returned_state != expected_state:
-        raise TimettaError("OAuth state mismatch — aborting login")
-    if not code:
-        raise TimettaError("No authorization code received")
-    tokens = await exchange_code(token_endpoint, client_id, code, verifier, redirect_uri)
+    tokens = tokens_from_response(resp.json(), token_endpoint)
     store.save(tokens)
     return tokens
 
 
-class _LoopbackServer(http.server.HTTPServer):
-    timed_out_flag = False
-
-    def handle_timeout(self) -> None:
-        self.timed_out_flag = True
-
-
-def _capture_redirect(
-    make_authorize_url,
-    *,
-    redirect_port: int = 0,
-    timeout: float = 120.0,
-) -> tuple[dict[str, str | None], str]:
-    """Bind a loopback server, open the browser, capture the OAuth redirect.
-
-    `make_authorize_url` is a callable taking the (now-known) redirect_uri and
-    returning the full authorize URL. Returns (captured_params, redirect_uri_used).
-    Skips non-OAuth requests (e.g. favicon) and raises on timeout.
-    """
-    captured: dict[str, str | None] = {}
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            code = params.get("code", [None])[0]
-            error = params.get("error", [None])[0]
-            if code or error:
-                captured["code"] = code
-                captured["state"] = params.get("state", [None])[0]
-                captured["error"] = error
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(b"Timetta login complete. You can close this tab.")
-            else:
-                self.send_response(204)  # favicon/preflight — ignore, keep waiting
-                self.end_headers()
-
-        def log_message(self, format, *args) -> None:  # noqa: A002 — silence stderr
-            pass
-
-    httpd = _LoopbackServer(("127.0.0.1", redirect_port), Handler)
-    actual_port = httpd.server_address[1]
-    redirect_uri = f"http://127.0.0.1:{actual_port}/callback"
-    httpd.timeout = timeout
-    try:
-        authorize_url = make_authorize_url(redirect_uri)
-        webbrowser.open(authorize_url)
-        print(f"If your browser did not open, visit:\n{authorize_url}")
-        while not captured and not httpd.timed_out_flag:
-            httpd.handle_request()
-    finally:
-        httpd.server_close()
-    if not captured:
-        raise TimettaError("Login timed out waiting for the browser redirect")
-    return captured, redirect_uri
-
-
-async def login(
-    *,
-    auth_url: str | None = None,
-    client_id: str | None = None,
-    store: TokenStore | None = None,
-    redirect_port: int = 0,
-    timeout: float = 120.0,
-) -> StoredTokens:
-    auth_url = (auth_url or get_auth_url()).rstrip("/")
-    client_id = client_id or get_client_id()
-    store = store or TokenStore(credentials_path())
-
-    verifier, challenge = generate_pkce()
-    state = secrets.token_urlsafe(16)
-
-    def make_authorize_url(redirect_uri: str) -> str:
-        return build_authorize_url(auth_url, client_id, redirect_uri, challenge, state)
-
-    captured, redirect_uri = _capture_redirect(
-        make_authorize_url, redirect_port=redirect_port, timeout=timeout
-    )
-    if captured.get("error"):
-        raise TimettaError(f"Authorization failed: {captured['error']}")
-    return await _finish_login(
-        returned_state=captured.get("state") or "",
-        expected_state=state,
-        code=captured.get("code") or "",
-        verifier=verifier,
-        redirect_uri=redirect_uri,
-        token_endpoint=f"{auth_url}/connect/token",
-        client_id=client_id,
-        store=store,
-    )
+def _prompt_credentials() -> tuple[str, str]:
+    username = input("Timetta login (email): ").strip()
+    password = getpass.getpass("Timetta password: ")
+    return username, password
 
 
 def login_command() -> None:
-    """Entry point for `timetta-mcp login`."""
+    """Entry point for `timetta-mcp login` (Resource Owner Password Grant)."""
+    username, password = _prompt_credentials()
+    if not username or not password:
+        print("Login aborted: username and password are required.")
+        raise SystemExit(1)
     try:
-        asyncio.run(login())
+        asyncio.run(password_login(username, password))
     except TimettaError as exc:
         print(f"Login failed: {exc}")
         raise SystemExit(1)

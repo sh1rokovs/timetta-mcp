@@ -23,7 +23,7 @@ read-write gateway.
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `TIMETTA_API_TOKEN` | one of the two | — | Static Token API value (Bearer), TTL 1 year. Takes priority when set. |
-| `TIMETTA_CLIENT_ID` | for OAuth | `external` | Public OAuth client id (PKCE, loopback redirect) used by `timetta-mcp login`. |
+| `TIMETTA_CLIENT_ID` | for OAuth | `external` | Public OAuth client id used by `timetta-mcp login` (password grant). |
 | `TIMETTA_AUTH_URL` | no | `https://auth.timetta.com` | OAuth auth server. |
 | `TIMETTA_CREDENTIALS_PATH` | no | platform default | Where OAuth tokens are stored. Default: `%APPDATA%\timetta-mcp\credentials.json` (Windows), `~/.config/timetta-mcp/credentials.json` (POSIX). |
 | `TIMETTA_BASE_URL` | no | `https://api.timetta.com/odata` | OData base URL. |
@@ -37,15 +37,17 @@ is not needed.
 Two modes, chosen automatically:
 
 1. **Static token (CI / automation).** Set `TIMETTA_API_TOKEN`. Used whenever present.
-2. **OAuth browser login.** Leave `TIMETTA_API_TOKEN` unset, set `TIMETTA_CLIENT_ID`,
-   then run a one-time login:
+2. **OAuth password login.** Leave `TIMETTA_API_TOKEN` unset, then run a one-time
+   login:
 
    ```bash
    timetta-mcp login
    ```
 
-   This opens your browser to Timetta, you authorize, and the refresh token is
-   saved to `TIMETTA_CREDENTIALS_PATH`. The server then refreshes the access
+   This prompts for your Timetta email and password, exchanges them for tokens
+   via the OAuth password grant (`grant_type=password`, client `external`), and
+   saves the refresh token to `TIMETTA_CREDENTIALS_PATH`. The password is never
+   stored — only the resulting tokens. The server then refreshes the access
    token automatically (no further interaction). Re-run `timetta-mcp login` if
    the refresh token expires (Timetta refresh tokens last roughly 15 days of
    inactivity — see Timetta's API docs for the exact lifetime).
