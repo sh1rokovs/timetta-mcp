@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+import mimetypes
+from pathlib import Path
+from typing import Any, Protocol
 
 import httpx
 
@@ -55,6 +57,10 @@ class TimettaClient:
     def __repr__(self) -> str:  # never leak the token
         return f"TimettaClient(base_url={self._base!r})"
 
+    @property
+    def base_url(self) -> str:
+        return self._base
+
     async def query(
         self,
         entity: str,
@@ -81,6 +87,51 @@ class TimettaClient:
 
         resp = await self._send("GET", f"{self._base}/{entity}", params=params, what=entity)
         return resp.json().get("value", [])
+
+    async def query_all(
+        self,
+        entity: str,
+        *,
+        filter: str | None = None,
+        select: str | None = None,
+        expand: str | None = None,
+        orderby: str | None = None,
+    ) -> list[dict]:
+        """Query an entity following @odata.nextLink to return all pages.
+
+        Used for resolving reference catalogs (issue types, priorities, project
+        tasks) inside composite tools, where the result set may exceed one page.
+        """
+        params: dict[str, str | int] = {}
+        if filter:
+            params["$filter"] = filter
+        if select:
+            params["$select"] = select
+        if expand:
+            params["$expand"] = expand
+        if orderby:
+            params["$orderby"] = orderby
+
+        items: list[dict] = []
+        next_url: str | None = None
+        while True:
+            if next_url:
+                resp = await self._send("GET", next_url, what=entity)
+            else:
+                resp = await self._send(
+                    "GET", f"{self._base}/{entity}", params=params, what=entity
+                )
+            body = resp.json()
+            values = body.get("value", [])
+            if isinstance(values, list):
+                items.extend(values)
+            next_url = body.get("@odata.nextLink")
+            if not next_url:
+                return items
+
+    async def get_by_id(self, entity: str, id: str) -> dict:
+        resp = await self._send("GET", f"{self._base}/{entity}({id})", what=entity)
+        return resp.json()
 
     async def create(self, entity: str, data: dict) -> dict:
         resp = await self._send(
@@ -111,6 +162,32 @@ class TimettaClient:
             what=entity,
         )
 
+    async def upload_file(
+        self,
+        path: str | Path,
+        *,
+        entity_type: str,
+        entity_id: str,
+        file_field: str = "attachment",
+        filename: str | None = None,
+    ) -> dict:
+        """Upload a file as multipart/form-data to Files/WP.UploadFile."""
+        p = Path(path)
+        if not p.exists():
+            raise TimettaError(f"Attachment file not found: {p}")
+        upload_name = filename or p.name
+        mime = mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
+        files = {file_field: (upload_name, p.read_bytes(), mime)}
+        form = {"entityType": entity_type, "entityId": str(entity_id)}
+        resp = await self._send(
+            "POST",
+            f"{self._base}/Files/WP.UploadFile",
+            files=files,
+            data=form,
+            what="Files",
+        )
+        return resp.json() if resp.content else {}
+
     async def fetch_metadata_xml(self) -> str:
         resp = await self._send("GET", f"{self._base}/$metadata", what="$metadata")
         return resp.text
@@ -123,13 +200,17 @@ class TimettaClient:
         params: dict[str, str | int] | None = None,
         json: dict | None = None,
         headers: dict[str, str] | None = None,
+        files: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
         what: str,
     ) -> httpx.Response:
-        resp = await self._request(method, url, params=params, json=json, headers=headers)
+        resp = await self._request(
+            method, url, params=params, json=json, headers=headers, files=files, data=data
+        )
         if resp.status_code == 401 and self._provider.can_refresh():
             await self._provider.force_refresh()
             resp = await self._request(
-                method, url, params=params, json=json, headers=headers
+                method, url, params=params, json=json, headers=headers, files=files, data=data
             )
         self._raise_for_status(resp, what)
         return resp
@@ -142,12 +223,14 @@ class TimettaClient:
         params: dict[str, str | int] | None = None,
         json: dict | None = None,
         headers: dict[str, str] | None = None,
+        files: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
     ) -> httpx.Response:
         token = await self._provider.get_token()
         merged = {"Authorization": f"Bearer {token}", **(headers or {})}
         try:
             return await self._client.request(
-                method, url, params=params, json=json, headers=merged
+                method, url, params=params, json=json, headers=merged, files=files, data=data
             )
         except httpx.RequestError as exc:
             raise TimettaError(f"Network error talking to Timetta: {exc}") from exc
