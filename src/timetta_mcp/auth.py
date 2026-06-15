@@ -210,37 +210,62 @@ async def _finish_login(
     return tokens
 
 
+class _LoopbackServer(http.server.HTTPServer):
+    timed_out_flag = False
+
+    def handle_timeout(self) -> None:
+        self.timed_out_flag = True
+
+
 def _capture_redirect(
-    authorize_url: str, redirect_uri: str, expected_state: str
-) -> dict[str, str | None]:
-    """Open the browser, serve exactly one loopback request, return its query."""
-    parsed = urllib.parse.urlparse(redirect_uri)
-    host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 0
+    make_authorize_url,
+    *,
+    redirect_port: int = 0,
+    timeout: float = 120.0,
+) -> tuple[dict[str, str | None], str]:
+    """Bind a loopback server, open the browser, capture the OAuth redirect.
+
+    `make_authorize_url` is a callable taking the (now-known) redirect_uri and
+    returning the full authorize URL. Returns (captured_params, redirect_uri_used).
+    Skips non-OAuth requests (e.g. favicon) and raises on timeout.
+    """
     captured: dict[str, str | None] = {}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            query = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(query)
-            captured["code"] = params.get("code", [None])[0]
-            captured["state"] = params.get("state", [None])[0]
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"Timetta login complete. You can close this tab.")
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            code = params.get("code", [None])[0]
+            error = params.get("error", [None])[0]
+            if code or error:
+                captured["code"] = code
+                captured["state"] = params.get("state", [None])[0]
+                captured["error"] = error
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"Timetta login complete. You can close this tab.")
+            else:
+                self.send_response(204)  # favicon/preflight — ignore, keep waiting
+                self.end_headers()
 
-        def log_message(self, *args) -> None:  # silence stderr noise
+        def log_message(self, format, *args) -> None:  # noqa: A002 — silence stderr
             pass
 
-    httpd = http.server.HTTPServer((host, port), Handler)
+    httpd = _LoopbackServer(("127.0.0.1", redirect_port), Handler)
+    actual_port = httpd.server_address[1]
+    redirect_uri = f"http://127.0.0.1:{actual_port}/callback"
+    httpd.timeout = timeout
     try:
+        authorize_url = make_authorize_url(redirect_uri)
         webbrowser.open(authorize_url)
         print(f"If your browser did not open, visit:\n{authorize_url}")
-        httpd.handle_request()  # blocks until the single redirect arrives
+        while not captured and not httpd.timed_out_flag:
+            httpd.handle_request()
     finally:
         httpd.server_close()
-    return captured
+    if not captured:
+        raise TimettaError("Login timed out waiting for the browser redirect")
+    return captured, redirect_uri
 
 
 async def login(
@@ -249,6 +274,7 @@ async def login(
     client_id: str | None = None,
     store: TokenStore | None = None,
     redirect_port: int = 0,
+    timeout: float = 120.0,
 ) -> StoredTokens:
     auth_url = (auth_url or get_auth_url()).rstrip("/")
     client_id = client_id or get_client_id()
@@ -256,15 +282,19 @@ async def login(
 
     verifier, challenge = generate_pkce()
     state = secrets.token_urlsafe(16)
-    redirect_uri = f"http://127.0.0.1:{redirect_port}/callback"
-    authorize_url = build_authorize_url(
-        auth_url, client_id, redirect_uri, challenge, state
+
+    def make_authorize_url(redirect_uri: str) -> str:
+        return build_authorize_url(auth_url, client_id, redirect_uri, challenge, state)
+
+    captured, redirect_uri = _capture_redirect(
+        make_authorize_url, redirect_port=redirect_port, timeout=timeout
     )
-    result = _capture_redirect(authorize_url, redirect_uri, state)
+    if captured.get("error"):
+        raise TimettaError(f"Authorization failed: {captured['error']}")
     return await _finish_login(
-        returned_state=result.get("state") or "",
+        returned_state=captured.get("state") or "",
         expected_state=state,
-        code=result.get("code") or "",
+        code=captured.get("code") or "",
         verifier=verifier,
         redirect_uri=redirect_uri,
         token_endpoint=f"{auth_url}/connect/token",

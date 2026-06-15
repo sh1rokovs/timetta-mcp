@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from urllib.parse import urlencode, urlparse, parse_qs
 
 import httpx
 import pytest
@@ -377,28 +378,64 @@ import timetta_mcp.auth as auth_mod
 
 
 @respx.mock
-async def test_login_drives_loopback_and_saves(tmp_path, monkeypatch):
+async def test_login_passes_real_redirect_uri_into_authorize_and_saves(tmp_path, monkeypatch):
     respx.post(TOKEN_EP).mock(
         return_value=httpx.Response(
             200, json={"access_token": "a", "refresh_token": "r", "expires_in": 3600}
         )
     )
     store = TokenStore(tmp_path / "creds.json")
+    seen = {}
 
-    captured = {}
-
-    def fake_capture(authorize_url, redirect_uri, expected_state):
-        captured["url"] = authorize_url
-        return {"code": "the-code", "state": expected_state}
+    def fake_capture(make_authorize_url, *, redirect_port=0, timeout=120.0):
+        redirect_uri = "http://127.0.0.1:5555/callback"
+        url = make_authorize_url(redirect_uri)
+        seen["url"] = url
+        state = parse_qs(urlparse(url).query)["state"][0]
+        # the authorize URL must carry the SAME redirect_uri we will exchange with
+        assert "127.0.0.1:5555" in parse_qs(urlparse(url).query)["redirect_uri"][0]
+        return {"code": "the-code", "state": state, "error": None}, redirect_uri
 
     monkeypatch.setattr(auth_mod, "_capture_redirect", fake_capture)
 
     tokens = await auth_mod.login(
-        auth_url="https://auth.timetta.com",
-        client_id="client",
-        store=store,
-        redirect_port=5555,
+        auth_url="https://auth.timetta.com", client_id="client", store=store
     )
     assert tokens.access_token == "a"
     assert store.load().refresh_token == "r"
-    assert captured["url"].startswith("https://auth.timetta.com/connect/authorize?")
+    assert seen["url"].startswith("https://auth.timetta.com/connect/authorize?")
+
+
+def test_capture_redirect_binds_real_port_and_skips_favicon(monkeypatch):
+    """Exercises the REAL _capture_redirect: bind-first port, favicon skip, return value."""
+    import threading
+    import urllib.request
+
+    def fake_open(url):
+        # simulate the browser: a favicon hit first (no code), then the real callback
+        redirect_uri = parse_qs(urlparse(url).query)["redirect_uri"][0]
+
+        def hit():
+            base = redirect_uri.rsplit("/callback", 1)[0]
+            try:
+                urllib.request.urlopen(base + "/favicon.ico", timeout=5).read()
+            except Exception:
+                pass
+            urllib.request.urlopen(redirect_uri + "?code=xyz&state=st", timeout=5).read()
+
+        threading.Thread(target=hit, daemon=True).start()
+
+    monkeypatch.setattr(auth_mod.webbrowser, "open", fake_open)
+
+    def make_url(redirect_uri):
+        return (
+            "https://auth.timetta.com/connect/authorize?"
+            + urlencode({"redirect_uri": redirect_uri, "state": "st"})
+        )
+
+    captured, redirect_uri = auth_mod._capture_redirect(make_url, redirect_port=0, timeout=10)
+    assert captured["code"] == "xyz"
+    assert captured["state"] == "st"
+    assert ":0/" not in redirect_uri
+    port = int(redirect_uri.split(":")[2].split("/")[0])
+    assert port > 0
