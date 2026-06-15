@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import httpx
 
 DEFAULT_BASE_URL = "https://api.timetta.com/odata"
@@ -10,6 +12,14 @@ MAX_TOP = 200
 
 class TimettaError(Exception):
     """Timetta API error with a message safe to show the model (no token)."""
+
+
+class TokenProvider(Protocol):
+    """Interface a token source must implement for TimettaClient."""
+
+    async def get_token(self) -> str: ...
+    def can_refresh(self) -> bool: ...
+    async def force_refresh(self) -> str: ...
 
 
 class _StaticToken:
@@ -22,20 +32,23 @@ class _StaticToken:
     def can_refresh(self) -> bool:
         return False
 
+    async def force_refresh(self) -> str:  # conforms to protocol; never called (can_refresh is False)
+        raise NotImplementedError
+
 
 class TimettaClient:
     def __init__(
         self,
         token: str | None = None,
         *,
-        token_provider=None,
+        token_provider: TokenProvider | None = None,
         base_url: str = DEFAULT_BASE_URL,
     ) -> None:
         if token_provider is None:
             if token is None:
                 raise TimettaError("TimettaClient needs a token or token_provider")
             token_provider = _StaticToken(token)
-        self._provider = token_provider
+        self._provider: TokenProvider = token_provider
         self._base = base_url.rstrip("/")
         self._client = httpx.AsyncClient(timeout=30.0)
 

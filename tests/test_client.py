@@ -168,6 +168,7 @@ class _RefreshOnceProvider:
         return True
 
     async def force_refresh(self):
+        assert self.tokens, "force_refresh called more times than expected"
         self.refreshed = True
         self.tokens.pop(0)
         return self.tokens[0]
@@ -198,4 +199,6 @@ async def test_query_second_401_raises():
     client = TimettaClient(token_provider=provider)
     with pytest.raises(TimettaError):
         await client.query("Users")
+    assert provider.refreshed is True       # refreshed exactly once
+    assert len(provider.tokens) == 1        # popped exactly once
     await client.aclose()
