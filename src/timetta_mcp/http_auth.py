@@ -18,6 +18,7 @@ public client cannot rely on.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import time
 
@@ -128,10 +129,44 @@ class TimettaTokenVerifier(TokenVerifier):
         )
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_loopback_host(host: str) -> bool:
+    """True when `host` binds only the local machine (127.0.0.1, ::1, localhost)."""
+    h = (host or "").strip().lower().strip("[]")
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False  # hostname / 0.0.0.0 / :: — treat as externally reachable
+
+
 def build_oauth_proxy() -> OAuthProxy:
     """Construct the OAuthProxy fronting Timetta's IdP for the HTTP transport."""
     auth_url = get_auth_url()
     scopes = os.environ.get("TIMETTA_OAUTH_SCOPES", DEFAULT_SCOPES)
+    # CIMD (Client ID Metadata Documents) lets clients like Claude Code present a
+    # URL client id; FastMCP then fetches that document over the network. Behind
+    # split-DNS VPNs/proxies the client URL can resolve to a reserved IP, which
+    # FastMCP's SSRF guard blocks — breaking auth. Disabling CIMD makes those
+    # clients fall back to plain Dynamic Client Registration against the proxy,
+    # with no outbound fetch.
+    #
+    # A loopback bind means a single-user local server, where CIMD is pure
+    # ceremony (the proxy authenticates upstream with its own fixed client) and
+    # the outbound fetch is a liability — so default it off there. On a non-loopback
+    # (hosted) bind, keep FastMCP's default of enabled, where stable client
+    # identity and bounded registration storage actually matter. The explicit
+    # env var overrides the heuristic either way.
+    enable_cimd = _env_flag(
+        "TIMETTA_OAUTH_ENABLE_CIMD", default=not is_loopback_host(http_host())
+    )
     return OAuthProxy(
         upstream_authorization_endpoint=f"{auth_url}/connect/authorize",
         upstream_token_endpoint=f"{auth_url}/connect/token",
@@ -144,4 +179,5 @@ def build_oauth_proxy() -> OAuthProxy:
         # Timetta returns a refresh token only when `offline_access` is requested,
         # which OAuthProxy needs to keep the session alive without re-prompting.
         extra_authorize_params={"scope": scopes},
+        enable_cimd=enable_cimd,
     )

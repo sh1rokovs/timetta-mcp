@@ -136,3 +136,20 @@ def test_public_base_url_explicit_override(monkeypatch):
 def test_http_path_normalizes_leading_slash(monkeypatch):
     monkeypatch.setenv("TIMETTA_MCP_PATH", "mcp")
     assert http_auth.http_path() == "/mcp"
+
+
+# --------------------------------------------------------------------------- #
+# CIMD loopback heuristic                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_is_loopback_host():
+    assert http_auth.is_loopback_host("127.0.0.1") is True
+    assert http_auth.is_loopback_host("::1") is True
+    assert http_auth.is_loopback_host("[::1]") is True
+    assert http_auth.is_loopback_host("localhost") is True
+    assert http_auth.is_loopback_host("0.0.0.0") is False
+    assert http_auth.is_loopback_host("::") is False
+    assert http_auth.is_loopback_host("10.0.0.5") is False
+    assert http_auth.is_loopback_host("mcp.example.com") is False
+

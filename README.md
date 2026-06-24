@@ -87,6 +87,7 @@ HTTP-mode configuration (all optional):
 | `TIMETTA_MCP_PATH` | `/mcp` | MCP endpoint path. |
 | `TIMETTA_PUBLIC_URL` | `http://<host>:<port>` | Externally reachable base URL (set when behind a proxy/tunnel). |
 | `TIMETTA_OAUTH_SCOPES` | `all offline_access` | Scopes requested upstream (`offline_access` yields the refresh token). |
+| `TIMETTA_OAUTH_ENABLE_CIMD` | off on a loopback bind, else on | Client ID Metadata Documents. Disabled by default when bound to loopback (single-user local server — CIMD is ceremony and its outbound fetch is a liability, e.g. when the client's CIMD URL resolves to a reserved IP behind a split-DNS VPN and FastMCP's SSRF guard blocks it); enabled by default otherwise. Set explicitly to override the heuristic. |
 | `TIMETTA_CLIENT_SECRET` | — | Only for a confidential upstream client; `external` is public (PKCE). |
 | `TIMETTA_AUTH_PROBE_PATH` | `Users?$top=1` | OData path used to validate a presented bearer. |
 
