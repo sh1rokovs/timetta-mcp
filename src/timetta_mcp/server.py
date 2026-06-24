@@ -4,14 +4,46 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from . import metadata
 from .auth import TokenProvider, TokenStore, credentials_path, get_client_id
 from .client import DEFAULT_BASE_URL, TimettaClient, TimettaError
 
-mcp = FastMCP("timetta")
+
+def _resolve_transport() -> str:
+    """Pick the transport from argv (`serve-http`) or `TIMETTA_MCP_TRANSPORT`.
+
+    Defaults to stdio (Claude Code spawns the process and pipes over stdio). The
+    `http` transport serves Streamable HTTP so the MCP client can drive the
+    OAuth `Authenticate` flow itself.
+    """
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("serve-http", "http", "streamable-http"):
+        return "http"
+    env = os.environ.get("TIMETTA_MCP_TRANSPORT", "stdio").strip().lower()
+    return "http" if env in ("http", "streamable-http") else "stdio"
+
+
+def _build_auth():
+    """Build the MCP-level auth provider, or None when not applicable.
+
+    OAuth is only wired up for the HTTP transport and only when there is no
+    static token — stdio relies on the file-based `timetta-mcp login` instead.
+    """
+    if os.environ.get("TIMETTA_API_TOKEN"):
+        return None  # static-token mode needs no client-driven OAuth
+    if _resolve_transport() != "http":
+        return None  # stdio uses the file-based login flow
+    # Imported lazily so stdio never pulls in the HTTP auth machinery.
+    from .http_auth import build_oauth_proxy
+
+    return build_oauth_proxy()
+
+
+mcp = FastMCP("timetta", auth=_build_auth())
 
 
 _token_provider: TokenProvider | None = None
@@ -31,11 +63,31 @@ def _get_token_provider() -> TokenProvider:
     return _token_provider
 
 
+def _request_bearer_token() -> str | None:
+    """Return the bearer the MCP client presented on this request, if any.
+
+    In HTTP/OAuth mode the client authenticates via OAuthProxy and forwards the
+    upstream Timetta access token; we call the OData API with that. Returns None
+    outside an authenticated HTTP request (e.g. stdio), so callers fall back to
+    the file-based / static token.
+    """
+    try:
+        from fastmcp.server.dependencies import get_access_token
+
+        access = get_access_token()
+    except Exception:
+        return None
+    return getattr(access, "token", None) if access else None
+
+
 def get_client() -> TimettaClient:
     base_url = os.environ.get("TIMETTA_BASE_URL", DEFAULT_BASE_URL)
     static = os.environ.get("TIMETTA_API_TOKEN")
     if static:
         return TimettaClient(token=static, base_url=base_url)
+    bearer = _request_bearer_token()
+    if bearer:
+        return TimettaClient(token=bearer, base_url=base_url)
     return TimettaClient(token_provider=_get_token_provider(), base_url=base_url)
 
 
@@ -516,14 +568,29 @@ async def attach_file(
 
 
 def main() -> None:
-    """Console entry point — `timetta-mcp` serves over stdio; `login` runs OAuth."""
-    import sys
+    """Console entry point.
 
+    - `timetta-mcp`            → serves over stdio (file-based OAuth via `login`).
+    - `timetta-mcp login`      → one-time browser OAuth for the stdio flow.
+    - `timetta-mcp serve-http` → Streamable HTTP so the MCP client drives the
+                                 `Authenticate` flow itself (also enabled by
+                                 `TIMETTA_MCP_TRANSPORT=http`).
+    """
     argv = sys.argv[1:]
     if argv and argv[0] == "login":
         from .auth import login_command
 
         login_command()
+        return
+    if _resolve_transport() == "http":
+        from .http_auth import http_host, http_path, http_port
+
+        mcp.run(
+            transport="http",
+            host=http_host(),
+            port=http_port(),
+            path=http_path(),
+        )
         return
     mcp.run()
 

@@ -5,7 +5,9 @@ description = "Timetta time-tracking MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.12",
+    # fastmcp 2 brings the OAuthProxy used by the Streamable HTTP transport and
+    # re-exports the FastMCP server (it depends on `mcp` itself).
+    "fastmcp>=2.11",
     "httpx>=0.27",
 ]
 
