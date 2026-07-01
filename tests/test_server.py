@@ -141,6 +141,24 @@ async def test_static_token_mode_sends_bearer_header(monkeypatch):
     await client.aclose()
 
 
+@respx.mock
+async def test_static_token_from_credentials_file_sends_bearer(monkeypatch, tmp_path):
+    """`timetta-mcp login` → Token API: server reads the static token from file."""
+    from timetta_mcp.auth import TokenStore
+
+    monkeypatch.delenv("TIMETTA_API_TOKEN", raising=False)
+    creds = tmp_path / "creds.json"
+    monkeypatch.setenv("TIMETTA_CREDENTIALS_PATH", str(creds))
+    TokenStore(creds).save_static("file-tok")
+    route = respx.get("https://api.timetta.com/odata/Users").mock(
+        return_value=httpx.Response(200, json={"value": []})
+    )
+    client = server.get_client()
+    await client.query("Users")
+    assert route.calls.last.request.headers["Authorization"] == "Bearer file-tok"
+    await client.aclose()
+
+
 # --------------------------------------------------------------------------- #
 # Composite tools                                                             #
 # --------------------------------------------------------------------------- #
@@ -159,6 +177,8 @@ class CompositeFakeClient(FakeClient):
         ]
         self._priorities = priorities if priorities is not None else [
             {"id": "pr-normal", "name": "Normal", "code": "NORMAL", "isDefault": True},
+            {"id": "st-inprogress", "name": "In Progress", "code": "IN_PROGRESS", "isDefault": False},
+            {"id": "st-done", "name": "Done", "code": "DONE", "isDefault": False},
         ]
         self._link_types = link_types if link_types is not None else [
             {"id": "lt-impl", "name": "Реализация"},
@@ -283,3 +303,56 @@ async def test_attach_file_resolves_issue_and_uploads(monkeypatch):
     assert fake.uploaded["entity_type"] == "Issue"
     assert fake.uploaded["entity_id"] == "i-1"
     assert fake.closed is True
+
+
+async def test_change_issue_status_resolves_status(monkeypatch):
+    fake = CompositeFakeClient()
+    _patch(monkeypatch, fake)
+    out = await server._change_issue_status("ISSUE-1", "IN_PROGRESS")
+    data = json.loads(out)
+    assert data["changed"] is True
+    assert data["key"] == "ISSUE-1"
+    assert data["statusCode"] == "IN_PROGRESS"
+    assert fake.last_write == ("update", "Issues", "i-1", {"statusId": "st-inprogress"})
+    assert fake.closed is True
+
+
+async def test_change_issue_status_unknown_key_returns_error(monkeypatch):
+    fake = CompositeFakeClient()
+    orig = fake.query
+
+    async def query(entity, **kwargs):
+        if entity == "Issues":
+            return []
+        return await orig(entity, **kwargs)
+
+    fake.query = query
+    _patch(monkeypatch, fake)
+    out = await server._change_issue_status("NOPE", "IN_PROGRESS")
+    assert out.startswith("Error:")
+    assert "NOPE" in out
+
+
+async def test_change_issue_status_unknown_status_returns_error(monkeypatch):
+    fake = CompositeFakeClient()
+    _patch(monkeypatch, fake)
+    out = await server._change_issue_status("ISSUE-1", "VOID")
+    assert out.startswith("Error:")
+    assert "VOID" in out
+    assert "IN_PROGRESS" in out or "DONE" in out
+
+
+async def test_change_issue_status_numeric_id_fallback(monkeypatch):
+    empty = CompositeFakeClient()
+    orig_query = empty.query
+
+    async def query(entity, **kwargs):
+        if entity == "Issues":
+            return []
+        return await orig_query(entity, **kwargs)
+
+    empty.query = query
+    _patch(monkeypatch, empty)
+    out = await server._change_issue_status("999", "IN_PROGRESS")
+    data = json.loads(out)
+    assert data["changed"] is True

@@ -1,13 +1,13 @@
 import asyncio
 import json
 import time
-from urllib.parse import urlencode, urlparse, parse_qs
 
 import httpx
 import pytest
 import respx
 
 from timetta_mcp.auth import (
+    StaticCredentials,
     StoredTokens,
     TokenStore,
     TokenProvider,
@@ -96,6 +96,37 @@ def test_token_store_repr_hides_path_secrets(tmp_path):
     store = TokenStore(tmp_path / "creds.json")
     store.save(StoredTokens("super-secret-access", "r", time.time(), "e"))
     assert "super-secret-access" not in repr(store)
+
+
+def test_save_static_and_load_any_returns_static(tmp_path):
+    store = TokenStore(tmp_path / "creds.json")
+    store.save_static("my-token-api-value")
+    creds = store.load_any()
+    assert isinstance(creds, StaticCredentials)
+    assert creds.api_token == "my-token-api-value"
+
+
+def test_load_any_returns_oauth_tokens_for_oauth_file(tmp_path):
+    store = TokenStore(tmp_path / "creds.json")
+    store.save(StoredTokens("a", "r", 123.0, "ep"))
+    creds = store.load_any()
+    assert isinstance(creds, StoredTokens)
+    assert creds.access_token == "a"
+
+
+def test_load_any_none_when_missing(tmp_path):
+    assert TokenStore(tmp_path / "nope.json").load_any() is None
+
+
+def test_load_any_malformed_static_raises(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text('{"type": "static"}', encoding="utf-8")  # no api_token
+    with pytest.raises(ValueError, match="Malformed"):
+        TokenStore(path).load_any()
+
+
+def test_static_credentials_repr_hides_token():
+    assert "super-secret-token" not in repr(StaticCredentials("super-secret-token"))
 
 
 # ---------------------------------------------------------------------------
@@ -222,223 +253,70 @@ async def test_provider_concurrent_calls_single_refresh(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 4: PKCE, authorize URL, code exchange, finish-login
+# Task 4: Resource Owner Password Grant login
 # ---------------------------------------------------------------------------
 
-import base64
-import hashlib
-from urllib.parse import parse_qs, urlparse
-
-from timetta_mcp.auth import (
-    build_authorize_url,
-    exchange_code,
-    generate_pkce,
-    _finish_login,
-)
-
-
-def test_generate_pkce_challenge_matches_verifier():
-    verifier, challenge = generate_pkce()
-    expected = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
-    assert challenge == expected
-    assert "=" not in challenge
-
-
-def test_build_authorize_url_has_pkce_and_state():
-    url = build_authorize_url(
-        "https://auth.timetta.com",
-        "client",
-        "http://127.0.0.1:5000/callback",
-        "the-challenge",
-        "the-state",
-    )
-    parsed = urlparse(url)
-    q = parse_qs(parsed.query)
-    assert parsed.path == "/connect/authorize"
-    assert q["response_type"] == ["code"]
-    assert q["client_id"] == ["client"]
-    assert q["redirect_uri"] == ["http://127.0.0.1:5000/callback"]
-    assert q["code_challenge"] == ["the-challenge"]
-    assert q["code_challenge_method"] == ["S256"]
-    assert q["state"] == ["the-state"]
-    assert q["scope"] == ["all offline_access"]
+from timetta_mcp.auth import password_login
 
 
 @respx.mock
-async def test_exchange_code_posts_pkce_and_returns_tokens():
+async def test_password_login_posts_grant_and_saves(tmp_path):
     route = respx.post(TOKEN_EP).mock(
-        return_value=httpx.Response(
-            200,
-            json={"access_token": "a", "refresh_token": "r", "expires_in": 3600},
-        )
-    )
-    tokens = await exchange_code(
-        TOKEN_EP, "client", "the-code", "the-verifier", "http://127.0.0.1:5000/callback"
-    )
-    assert tokens.access_token == "a"
-    assert tokens.refresh_token == "r"
-    assert tokens.expires_at > time.time()
-    body = route.calls.last.request.read().decode()
-    assert "grant_type=authorization_code" in body
-    assert "code=the-code" in body
-    assert "code_verifier=the-verifier" in body
-
-
-@respx.mock
-async def test_finish_login_state_mismatch_raises(tmp_path):
-    store = TokenStore(tmp_path / "creds.json")
-    with pytest.raises(TimettaError, match="state"):
-        await _finish_login(
-            returned_state="bad",
-            expected_state="good",
-            code="c",
-            verifier="v",
-            redirect_uri="http://127.0.0.1:5000/callback",
-            token_endpoint=TOKEN_EP,
-            client_id="client",
-            store=store,
-        )
-
-
-@respx.mock
-async def test_finish_login_saves_tokens(tmp_path):
-    respx.post(TOKEN_EP).mock(
         return_value=httpx.Response(
             200, json={"access_token": "a", "refresh_token": "r", "expires_in": 3600}
         )
     )
     store = TokenStore(tmp_path / "creds.json")
-    await _finish_login(
-        returned_state="good",
-        expected_state="good",
-        code="c",
-        verifier="v",
-        redirect_uri="http://127.0.0.1:5000/callback",
-        token_endpoint=TOKEN_EP,
+    tokens = await password_login(
+        "user@example.com",
+        "s3cret",
+        auth_url="https://auth.timetta.com",
         client_id="client",
         store=store,
     )
-    assert store.load().access_token == "a"
-
-
-@respx.mock
-async def test_exchange_code_non_200_raises_with_detail(tmp_path):
-    respx.post(TOKEN_EP).mock(
-        return_value=httpx.Response(
-            400, json={"error": "invalid_grant", "error_description": "bad code"}
-        )
-    )
-    with pytest.raises(TimettaError, match="bad code"):
-        await exchange_code(
-            TOKEN_EP, "client", "c", "v", "http://127.0.0.1:5000/callback"
-        )
-
-
-@respx.mock
-async def test_exchange_code_network_error_raises(tmp_path):
-    respx.post(TOKEN_EP).mock(side_effect=httpx.ConnectError("boom"))
-    with pytest.raises(TimettaError, match="Network error"):
-        await exchange_code(
-            TOKEN_EP, "client", "c", "v", "http://127.0.0.1:5000/callback"
-        )
-
-
-async def test_finish_login_empty_code_raises(tmp_path):
-    store = TokenStore(tmp_path / "creds.json")
-    with pytest.raises(TimettaError, match="code"):
-        await _finish_login(
-            returned_state="good",
-            expected_state="good",
-            code="",
-            verifier="v",
-            redirect_uri="http://127.0.0.1:5000/callback",
-            token_endpoint=TOKEN_EP,
-            client_id="client",
-            store=store,
-        )
-
-
-def test_pkce_s256_matches_rfc7636_vector():
-    # RFC 7636 Appendix B
-    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
-    expected_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-    challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
-    assert challenge == expected_challenge
-
-
-import timetta_mcp.auth as auth_mod
-
-
-@respx.mock
-async def test_login_passes_real_redirect_uri_into_authorize_and_saves(tmp_path, monkeypatch):
-    respx.post(TOKEN_EP).mock(
-        return_value=httpx.Response(
-            200, json={"access_token": "a", "refresh_token": "r", "expires_in": 3600}
-        )
-    )
-    store = TokenStore(tmp_path / "creds.json")
-    seen = {}
-
-    def fake_capture(make_authorize_url, *, redirect_port=0, timeout=120.0):
-        redirect_uri = "http://127.0.0.1:5555/callback"
-        url = make_authorize_url(redirect_uri)
-        seen["url"] = url
-        state = parse_qs(urlparse(url).query)["state"][0]
-        # the authorize URL must carry the SAME redirect_uri we will exchange with
-        assert "127.0.0.1:5555" in parse_qs(urlparse(url).query)["redirect_uri"][0]
-        return {"code": "the-code", "state": state, "error": None}, redirect_uri
-
-    monkeypatch.setattr(auth_mod, "_capture_redirect", fake_capture)
-
-    tokens = await auth_mod.login(
-        auth_url="https://auth.timetta.com", client_id="client", store=store
-    )
     assert tokens.access_token == "a"
     assert store.load().refresh_token == "r"
-    assert seen["url"].startswith("https://auth.timetta.com/connect/authorize?")
+    body = route.calls.last.request.read().decode()
+    assert "grant_type=password" in body
+    assert "username=user%40example.com" in body
+    assert "password=s3cret" in body
+    assert "client_id=client" in body
+    assert "scope=all+offline_access" in body
 
 
-def test_capture_redirect_binds_real_port_and_skips_favicon(monkeypatch):
-    """Exercises the REAL _capture_redirect: bind-first port, favicon skip, return value."""
-    import threading
-    import urllib.request
+@respx.mock
+async def test_password_login_non_200_raises_with_detail(tmp_path):
+    respx.post(TOKEN_EP).mock(
+        return_value=httpx.Response(
+            400, json={"error": "invalid_grant", "error_description": "bad credentials"}
+        )
+    )
+    store = TokenStore(tmp_path / "creds.json")
+    with pytest.raises(TimettaError, match="bad credentials"):
+        await password_login(
+            "user", "wrong", auth_url="https://auth.timetta.com", client_id="c", store=store
+        )
+    assert store.load() is None  # nothing persisted on failure
 
-    def fake_open(url):
-        # simulate the browser: a favicon hit first (no code), then the real callback
-        redirect_uri = parse_qs(urlparse(url).query)["redirect_uri"][0]
 
-        def hit():
-            base = redirect_uri.rsplit("/callback", 1)[0]
-            try:
-                urllib.request.urlopen(base + "/favicon.ico", timeout=5).read()
-            except Exception:
-                pass
-            urllib.request.urlopen(redirect_uri + "?code=xyz&state=st", timeout=5).read()
-
-        threading.Thread(target=hit, daemon=True).start()
-
-    monkeypatch.setattr(auth_mod.webbrowser, "open", fake_open)
-
-    def make_url(redirect_uri):
-        return (
-            "https://auth.timetta.com/connect/authorize?"
-            + urlencode({"redirect_uri": redirect_uri, "state": "st"})
+@respx.mock
+async def test_password_login_network_error_raises(tmp_path):
+    respx.post(TOKEN_EP).mock(side_effect=httpx.ConnectError("boom"))
+    store = TokenStore(tmp_path / "creds.json")
+    with pytest.raises(TimettaError, match="Network error"):
+        await password_login(
+            "user", "pw", auth_url="https://auth.timetta.com", client_id="c", store=store
         )
 
-    captured, redirect_uri = auth_mod._capture_redirect(make_url, redirect_port=0, timeout=10)
-    assert captured["code"] == "xyz"
-    assert captured["state"] == "st"
-    assert ":0/" not in redirect_uri
-    port = int(redirect_uri.split(":")[2].split("/")[0])
-    assert port > 0
+
+@respx.mock
+async def test_password_login_200_without_access_token_raises(tmp_path):
+    respx.post(TOKEN_EP).mock(return_value=httpx.Response(200, json={"expires_in": 3600}))
+    store = TokenStore(tmp_path / "creds.json")
+    with pytest.raises(TimettaError, match="timetta-mcp login"):
+        await password_login(
+            "user", "pw", auth_url="https://auth.timetta.com", client_id="c", store=store
+        )
 
 
 async def test_provider_corrupt_file_raises_login_hint(tmp_path):

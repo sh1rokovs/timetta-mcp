@@ -23,7 +23,7 @@ read-write gateway.
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `TIMETTA_API_TOKEN` | one of the two | — | Static Token API value (Bearer), TTL 1 year. Takes priority when set. |
-| `TIMETTA_CLIENT_ID` | for OAuth | `external` | Public OAuth client id (PKCE, loopback redirect) used by `timetta-mcp login`. |
+| `TIMETTA_CLIENT_ID` | for OAuth | `external` | Public OAuth client id used by `timetta-mcp login` (password grant). |
 | `TIMETTA_AUTH_URL` | no | `https://auth.timetta.com` | OAuth auth server. |
 | `TIMETTA_CREDENTIALS_PATH` | no | platform default | Where OAuth tokens are stored. Default: `%APPDATA%\timetta-mcp\credentials.json` (Windows), `~/.config/timetta-mcp/credentials.json` (POSIX). |
 | `TIMETTA_BASE_URL` | no | `https://api.timetta.com/odata` | OData base URL. |
@@ -34,21 +34,35 @@ is not needed.
 
 ## Authentication
 
-Two modes, chosen automatically:
+The server picks credentials in this order: `TIMETTA_API_TOKEN` env var →
+credentials file written by `timetta-mcp login` → otherwise an error asking you
+to log in.
 
-1. **Static token (CI / automation).** Set `TIMETTA_API_TOKEN`. Used whenever present.
-2. **OAuth browser login.** Leave `TIMETTA_API_TOKEN` unset, set `TIMETTA_CLIENT_ID`,
-   then run a one-time login:
+Run a one-time login and choose a method (like the Timetta VS Code extension):
 
-   ```bash
-   timetta-mcp login
-   ```
+```bash
+timetta-mcp login
+```
 
-   This opens your browser to Timetta, you authorize, and the refresh token is
-   saved to `TIMETTA_CREDENTIALS_PATH`. The server then refreshes the access
-   token automatically (no further interaction). Re-run `timetta-mcp login` if
-   the refresh token expires (Timetta refresh tokens last roughly 15 days of
-   inactivity — see Timetta's API docs for the exact lifetime).
+1. **Token API** (recommended; works with SSO accounts). Paste a long-lived
+   token generated in Timetta settings (TTL ~1 year). It is saved to
+   `TIMETTA_CREDENTIALS_PATH` and sent as a Bearer token. No refresh needed.
+2. **Email + password** (OAuth password grant). Exchanges your Timetta
+   email/password for tokens via `grant_type=password` (client `external`) and
+   saves the refresh token. The password is never stored — only the resulting
+   tokens. The server refreshes the access token automatically; re-run
+   `timetta-mcp login` if the refresh token expires (Timetta refresh tokens last
+   roughly 15 days of inactivity).
+
+These are the only two methods Timetta documents for integrations; it offers no
+self-service OAuth client registration or browser `authorization_code` flow.
+
+For CI / automation you can skip `login` entirely and set `TIMETTA_API_TOKEN` —
+it always takes priority.
+
+> Tip: run `timetta-mcp` from this checkout with `uv run timetta-mcp …` (or
+> `uvx --no-cache --from . timetta-mcp …`). Plain `uvx --from <path>` caches the
+> built environment and may run stale code after you edit the source.
 
 ## Run
 
