@@ -6,6 +6,8 @@ read-write gateway.
 
 ## Tools
 
+### Generic CRUD
+
 - `list_entities()` — list queryable OData entities.
 - `get_entity_schema(entity)` — fields, types and navigation properties of an
   entity. Call this first to learn real field names.
@@ -18,6 +20,19 @@ read-write gateway.
   holds only the fields to change.
 - `delete_entity(entity, id)` — delete a record by id (DELETE).
 
+### Composite (reference-data resolved)
+
+- `create_issue(title, description?, type_hint?, project_id?, priority_code?,
+  project_task_id?, project_task_hint?, parent_id?, assignee_id?)` — create
+  a Timetta issue in one call. Resolves issue type, priority, and project
+  task from reference catalogs internally.
+- `link_issues(source_id, destination_id, link_type_name?)` — link two issues,
+  resolving the link type by name.
+- `attach_file(issue_key_or_id, file_path, filename?)` — attach a local file
+  to an issue, resolving it by key or numeric id.
+- `change_issue_status(issue_key, status_code)` — change the status of an
+  issue. Resolves the status code against the DirectoryEntries catalog.
+
 ## Configuration
 
 | Variable | Required | Default | Notes |
@@ -27,6 +42,10 @@ read-write gateway.
 | `TIMETTA_AUTH_URL` | no | `https://auth.timetta.com` | OAuth auth server. |
 | `TIMETTA_CREDENTIALS_PATH` | no | platform default | Where OAuth tokens are stored. Default: `%APPDATA%\timetta-mcp\credentials.json` (Windows), `~/.config/timetta-mcp/credentials.json` (POSIX). |
 | `TIMETTA_BASE_URL` | no | `https://api.timetta.com/odata` | OData base URL. |
+| `TIMETTA_DEFAULT_PROJECT_ID` | no | — | Default project for `create_issue`. |
+| `TIMETTA_DEFAULT_PRIORITY_CODE` | no | — | Default priority code for `create_issue`. |
+| `TIMETTA_DEFAULT_ASSIGNEE_ID` | no | — | Default assignee for `create_issue`. |
+| `TIMETTA_DEFAULT_PROJECT_TASK_ID` | no | — | Default project task for `create_issue`. |
 
 The server can create, update and delete records. Effective permissions are
 governed entirely by the token — use a read-only Timetta token if write access
