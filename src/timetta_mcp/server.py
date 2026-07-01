@@ -306,6 +306,21 @@ async def _resolve_priority(client: TimettaClient, preferred_code: str) -> dict[
     raise TimettaError("Timetta priority catalog is empty")
 
 
+async def _resolve_status_code(client: TimettaClient, status_code: str) -> dict[str, str]:
+    rows = await client.query_all(
+        "DirectoryEntries", select="id,name,code"
+    )
+    for item in rows:
+        if (item.get("code") or "").upper() == status_code.upper():
+            return {"id": str(item["id"]), "code": item.get("code", ""), "name": item.get("name", "")}
+    available = ", ".join(
+        sorted(filter(None, {(i.get("code") or "").upper() for i in rows}))
+    )
+    raise TimettaError(
+        f"Timetta status code '{status_code}' not found. Available: {available}"
+    )
+
+
 async def _resolve_project_task_id(client: TimettaClient, project_id: str, hint: str) -> str:
     if not hint:
         return ""
@@ -469,6 +484,33 @@ async def _attach_file(issue_key_or_id: str, file_path: str, filename: str | Non
         await client.aclose()
 
 
+async def _change_issue_status(issue_key: str, status_code: str) -> str:
+    try:
+        client = get_client()
+    except TimettaError as exc:
+        return f"Error: {exc}"
+    try:
+        issue = await _get_issue_by_key(client, issue_key)
+        issue_id = str(issue.get("id") or "")
+        if not issue_id:
+            raise TimettaError(f"Timetta issue has empty id: {issue_key}")
+        resolved = await _resolve_status_code(client, status_code)
+        await client.update("Issues", issue_id, {"statusId": resolved["id"]})
+        return _dumps(
+            {
+                "changed": True,
+                "id": issue_id,
+                "key": issue.get("code", ""),
+                "statusCode": resolved["code"],
+                "statusName": resolved.get("name", ""),
+            }
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+    finally:
+        await client.aclose()
+
+
 @mcp.tool()
 async def create_issue(
     title: str,
@@ -528,6 +570,16 @@ async def attach_file(
     multipart/form-data. `filename` overrides the stored name. Returns compact
     JSON {attached, issueId, file}, or 'Error: ...' on failure."""
     return await _attach_file(issue_key_or_id, file_path, filename)
+
+
+@mcp.tool()
+async def change_issue_status(issue_key: str, status_code: str) -> str:
+    """Change the status of a Timetta issue in one call.
+
+    Resolves the issue by its key (or numeric id) and the status code against
+    the DirectoryEntries catalog. Returns compact JSON {changed, id, key,
+    statusCode, statusName}, or 'Error: ...' on failure."""
+    return await _change_issue_status(issue_key, status_code)
 
 
 def main() -> None:

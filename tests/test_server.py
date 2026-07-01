@@ -177,6 +177,8 @@ class CompositeFakeClient(FakeClient):
         ]
         self._priorities = priorities if priorities is not None else [
             {"id": "pr-normal", "name": "Normal", "code": "NORMAL", "isDefault": True},
+            {"id": "st-inprogress", "name": "In Progress", "code": "IN_PROGRESS", "isDefault": False},
+            {"id": "st-done", "name": "Done", "code": "DONE", "isDefault": False},
         ]
         self._link_types = link_types if link_types is not None else [
             {"id": "lt-impl", "name": "Реализация"},
@@ -301,3 +303,56 @@ async def test_attach_file_resolves_issue_and_uploads(monkeypatch):
     assert fake.uploaded["entity_type"] == "Issue"
     assert fake.uploaded["entity_id"] == "i-1"
     assert fake.closed is True
+
+
+async def test_change_issue_status_resolves_status(monkeypatch):
+    fake = CompositeFakeClient()
+    _patch(monkeypatch, fake)
+    out = await server._change_issue_status("ISSUE-1", "IN_PROGRESS")
+    data = json.loads(out)
+    assert data["changed"] is True
+    assert data["key"] == "ISSUE-1"
+    assert data["statusCode"] == "IN_PROGRESS"
+    assert fake.last_write == ("update", "Issues", "i-1", {"statusId": "st-inprogress"})
+    assert fake.closed is True
+
+
+async def test_change_issue_status_unknown_key_returns_error(monkeypatch):
+    fake = CompositeFakeClient()
+    orig = fake.query
+
+    async def query(entity, **kwargs):
+        if entity == "Issues":
+            return []
+        return await orig(entity, **kwargs)
+
+    fake.query = query
+    _patch(monkeypatch, fake)
+    out = await server._change_issue_status("NOPE", "IN_PROGRESS")
+    assert out.startswith("Error:")
+    assert "NOPE" in out
+
+
+async def test_change_issue_status_unknown_status_returns_error(monkeypatch):
+    fake = CompositeFakeClient()
+    _patch(monkeypatch, fake)
+    out = await server._change_issue_status("ISSUE-1", "VOID")
+    assert out.startswith("Error:")
+    assert "VOID" in out
+    assert "IN_PROGRESS" in out or "DONE" in out
+
+
+async def test_change_issue_status_numeric_id_fallback(monkeypatch):
+    empty = CompositeFakeClient()
+    orig_query = empty.query
+
+    async def query(entity, **kwargs):
+        if entity == "Issues":
+            return []
+        return await orig_query(entity, **kwargs)
+
+    empty.query = query
+    _patch(monkeypatch, empty)
+    out = await server._change_issue_status("999", "IN_PROGRESS")
+    data = json.loads(out)
+    assert data["changed"] is True
